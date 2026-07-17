@@ -315,12 +315,12 @@ def _student_code_entered(msg):
     
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if test_type == "html":
-        link = f"{html_link}&v=3" if "?" in html_link else f"{html_link}?v=3"
+        link = f"{html_link}&v=4" if "?" in html_link else f"{html_link}?v=4"
         kb.add(types.KeyboardButton("📱 Testni boshlash", web_app=types.WebAppInfo(url=link)))
     elif test_type == "rush":
-        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}&v=3")))
+        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}&v=4")))
     else:
-        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}&v=3")))
+        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}&v=4")))
         
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     safe_send(msg.chat.id, f"✅ *Test topildi!*\n🔢 Kod: `{code}`", parse_mode="Markdown", reply_markup=kb)
@@ -350,7 +350,6 @@ def _admin_base_code(msg, test_type):
         m = safe_send(msg.chat.id, "❌ Noto'g'ri format!", parse_mode="Markdown")
         if m: bot.register_next_step_handler(m, _admin_base_code, test_type)
 
-# ---- TUZATILGAN QISM ----
 def _admin_base_deadline(msg):
     if is_back(msg.text): return go_home(msg)
     deadline = msg.text.strip()
@@ -371,13 +370,12 @@ def _admin_base_deadline(msg):
 
     kb.add(types.KeyboardButton(
         "🛠 Javoblarni kiritish",
-        web_app=types.WebAppInfo(url=f"{target_url}?count={state['count']}&v=3")
+        web_app=types.WebAppInfo(url=f"{target_url}?count={state['count']}&v=4")
     ))
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     
     t_name = "Rush (Rasch)" if test_type == "rush" else "PDF"
     safe_send(msg.chat.id, f"✅ *Kod:* `{state['code']}` ({t_name})\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
-# -------------------------
 
 @bot.message_handler(content_types=["web_app_data"])
 def handle_web_app(msg):
@@ -402,7 +400,7 @@ def handle_web_app(msg):
     except:
         pass
     
-    # ... qolgan logikalar o'z holida qoladi ...
+    # Qolgan saqlash logikalari
     safe_send(msg.chat.id, "✅ Natija saqlandi.", reply_markup=main_menu(msg.chat.id))
 
 @app.route(f"/{TOKEN}", methods=["POST"])
