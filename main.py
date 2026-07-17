@@ -300,18 +300,18 @@ def theta_to_ball(theta):
     return round(p * 100, 1)
 
 def get_daraja(ball):
-    """Sertifikat darajasini aniq 5 ballik qadamlar bilan qaytaradi."""
+    """Sertifikat darajasini aniq belgilangan oraliqlar bilan qaytaradi."""
     if ball >= 70:
         return "A+"
-    elif 65 <= ball < 70:
+    elif ball >= 66:
         return "A"
-    elif 60 <= ball < 65:
+    elif ball >= 61:
         return "B+"
-    elif 55 <= ball < 60:
+    elif ball >= 56:
         return "B"
-    elif 50 <= ball < 55:
+    elif ball >= 51:
         return "C+"
-    elif 46 <= ball < 50:
+    elif ball >= 46:
         return "C"
     else:
         return "—"
@@ -440,13 +440,7 @@ def _admin_export_results(msg):
             user_id, name, score, total, created_at = r
             theta = calculate_rasch_theta(score, b_items)
             ball = theta_to_ball(theta)
-            
-            # Shart: 15 tadan kam savolga to'g'ri javob berganlarga "C" ham berilmasin
-            if score < 15:
-                daraja = "—"
-            else:
-                daraja = get_daraja(ball)
-
+            daraja = get_daraja(ball)
             writer.writerow([name, score, ball, daraja])
     else:
         for r in rows:
@@ -516,7 +510,7 @@ def handle_web_app(msg):
         analysis_text = ""
         ans_bin = ""
 
-        # O'quvchi javoblari tahlili (1.✅, 2.❌(A))
+        # Natijalarni tahlil qilish (Adminga yuborish uchun)
         for i in range(total_q):
             u_a = user_answers[i]
             c_a = correct_answers[i]
@@ -529,7 +523,6 @@ def handle_web_app(msg):
                 ans_bin += "0"
                 analysis_text += f"{i+1}.❌({c_a.upper()})  "
 
-            # Yozuv uzun bo'lib ketmasligi uchun har 5 ta savoldan keyin pastga tushiramiz
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
 
@@ -541,17 +534,28 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga natija (qaysiga to'g'ri/xato) - Daraja aytilmaydi
+        # O'quvchiga faqat natija va yo'naltiruvchi tugmalar chiqadi (Batafsil tahlil olib tashlandi)
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
             f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdingiz\n\n"
-            f"📝 *Batafsil tahlil:*\n{analysis_text}"
+            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdingiz."
         )
-        safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+        
+        # Yo'naltiruvchi (Guidance) tugmalar
+        guidance_kb = types.InlineKeyboardMarkup(row_width=2)
+        guidance_kb.add(
+            types.InlineKeyboardButton("⬅️ Oldingi bo'lim", callback_data="guide_prev"),
+            types.InlineKeyboardButton("Keyingi bo'lim ➡️", callback_data="guide_next")
+        )
+        guidance_kb.add(types.InlineKeyboardButton("ℹ️ Yo'riqnoma", callback_data="guide_help"))
 
-        # Adminga ham ayni shu ixcham analiz bilan boradi
+        safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=guidance_kb)
+        
+        # O'quvchini asosiy menyuga qaytarish
+        safe_send(msg.chat.id, "Bosh menyu:", reply_markup=main_menu(msg.chat.id))
+
+        # Adminga esa to'liq tahlil yuboriladi
         admin_msg = (
             f"📥 *Yangi natija keldi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
@@ -565,6 +569,16 @@ def handle_web_app(msg):
         return
 
     safe_send(msg.chat.id, "✅ Ma'lumot qabul qilindi.", reply_markup=main_menu(msg.chat.id))
+
+# --- Yo'naltiruvchi tugmalar uchun callback ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("guide_"))
+def handle_guidance(call):
+    if call.data == "guide_prev":
+        bot.answer_callback_query(call.id, "⬅️ Oldingi mavzularni takrorlash bo'yicha ko'rsatma...", show_alert=True)
+    elif call.data == "guide_next":
+        bot.answer_callback_query(call.id, "Keyingi mavzularga o'tish uchun tayyorsiz! ➡️", show_alert=True)
+    elif call.data == "guide_help":
+        bot.answer_callback_query(call.id, "ℹ️ Natijani yaxshilash yoki xatolar ustida ishlash uchun ustozga murojaat qiling.", show_alert=True)
 
 # --- Super Admin Management ---
 @bot.message_handler(func=lambda m: m.text == "👥 Adminlar boshqaruvi")
