@@ -34,17 +34,6 @@ PORT        = int(os.environ.get("PORT", 5000))
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN, threaded=True, num_threads=20)
 
-# --- Rasch / Daraja sozlamalari ---
-RUSH_MIN_CORRECT_FOR_C = 15   # kam o'quvchi/juda past natijada sun'iy tushib ketmasligi uchun
-DARAJA_THRESHOLDS = [
-    (70, "A+"),
-    (65, "A"),
-    (60, "B+"),
-    (55, "B"),
-    (50, "C+"),
-    (46, "C"),
-]
-
 # --- State Management ---
 _states_lock = threading.Lock()
 _user_states: dict = {}
@@ -152,7 +141,6 @@ def is_super_admin(chat_id):
     return int(chat_id) == SUPER_ADMIN
 
 def get_admin_chat_ids():
-    """Barcha adminlar (super admin + admins jadvalidagilar) ID'lari."""
     ids = {SUPER_ADMIN}
     rows = db_fetch("SELECT user_id FROM admins")
     for r in rows:
@@ -312,11 +300,21 @@ def theta_to_ball(theta):
     return round(p * 100, 1)
 
 def get_daraja(ball):
-    """100 ballik natijaga qarab sertifikat darajasini qaytaradi."""
-    for chegara, nom in DARAJA_THRESHOLDS:
-        if ball >= chegara:
-            return nom
-    return "—"
+    """Sertifikat darajasini aniq 5 ballik qadamlar bilan qaytaradi."""
+    if ball >= 70:
+        return "A+"
+    elif 65 <= ball < 70:
+        return "A"
+    elif 60 <= ball < 65:
+        return "B+"
+    elif 55 <= ball < 60:
+        return "B"
+    elif 50 <= ball < 55:
+        return "C+"
+    elif 46 <= ball < 50:
+        return "C"
+    else:
+        return "—"
 
 # --- Student Test Solving ---
 @bot.message_handler(commands=["test"])
@@ -332,7 +330,6 @@ def _student_code_entered(msg):
     if is_back(msg.text): return go_home(msg)
     code = msg.text.strip().upper()
 
-    # FAQAT 1 MARTA ISHLASH MUMKINLIGINI TEKSHIRISH
     count = db_fetch("SELECT COUNT(*) FROM results WHERE user_id=? AND code=?", (msg.chat.id, code), one=True)
     if count and count[0] >= 1:
         safe_send(msg.chat.id, "⚠️ Siz bu testni allaqachon ishlagansiz!\nHar bir testga faqat *1 marta* javob yuborish mumkin.", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
@@ -346,12 +343,6 @@ def _student_code_entered(msg):
 
     answers, deadline, test_type, html_link = row
     update_state(msg.chat.id, code=code, correct=answers, type=test_type, html_link=html_link)
-
-    # MUHIM: chatda oldindan qolib ketgan "keyingi qadam" handlerini tozalaymiz.
-    # Aks holda WebApp'dan qaytadigan birinchi javob shu eski handler tomonidan
-    # "yutib yuborilib", natija saqlanmay qolar edi (2-marta yuborganda esa
-    # eski handler allaqachon ishlatib bo'lingani uchun to'g'ri qabul qilinardi).
-    bot.clear_step_handler_by_chat_id(msg.chat.id)
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if test_type == "rush":
@@ -404,9 +395,6 @@ def _admin_base_deadline(msg):
     test_type = state.get("test_type", "pdf")
     target_url = RUSH_WEB_APP_URL if test_type == "rush" else WEB_APP_URL
 
-    # Xuddi shu sababdan (qolib ketgan next-step handler) bu yerda ham tozalaymiz.
-    bot.clear_step_handler_by_chat_id(msg.chat.id)
-
     kb.add(types.KeyboardButton(
         "🛠 Javoblarni kiritish",
         web_app=types.WebAppInfo(url=f"{target_url}?count={state['count']}&v=4")
@@ -443,7 +431,8 @@ def _admin_export_results(msg):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Bali (100)", "Daraja"])
+    
+    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
 
     if test_type == "rush":
         b_items = get_rasch_item_difficulties(code, total_q)
@@ -451,14 +440,12 @@ def _admin_export_results(msg):
             user_id, name, score, total, created_at = r
             theta = calculate_rasch_theta(score, b_items)
             ball = theta_to_ball(theta)
-            daraja = get_daraja(ball)
-
-            # Kam o'quvchi/juda past natija sababli daraja sun'iy tushib
-            # ketmasligi uchun: 15+ to'g'ri javob bergan ishtirokchiga
-            # kamida "C" daraja kafolatlanadi.
-            if score >= RUSH_MIN_CORRECT_FOR_C and daraja not in ("C+", "B", "B+", "A", "A+"):
-                ball = max(ball, 46.0)
-                daraja = "C"
+            
+            # Shart: 15 tadan kam savolga to'g'ri javob berganlarga "C" ham berilmasin
+            if score < 15:
+                daraja = "—"
+            else:
+                daraja = get_daraja(ball)
 
             writer.writerow([name, score, ball, daraja])
     else:
@@ -468,7 +455,6 @@ def _admin_export_results(msg):
             daraja = get_daraja(ball)
             writer.writerow([name, score, ball, daraja])
 
-    # O'zbek harflari (o', g') to'g'ri ko'rinishi uchun utf-8-sig
     mem_file = io.BytesIO(output.getvalue().encode('utf-8-sig'))
     mem_file.name = f"{code}_natijalar.csv"
 
@@ -530,17 +516,20 @@ def handle_web_app(msg):
         analysis_text = ""
         ans_bin = ""
 
+        # O'quvchi javoblari tahlili (1.✅, 2.❌(A))
         for i in range(total_q):
             u_a = user_answers[i]
             c_a = correct_answers[i]
+            
             if u_a == c_a:
                 score += 1
                 ans_bin += "1"
-                analysis_text += f"*{i+1}.* ✅ "
+                analysis_text += f"{i+1}.✅  "
             else:
                 ans_bin += "0"
-                analysis_text += f"*{i+1}.* ❌ (To'g'ri: {c_a.upper()}) "
+                analysis_text += f"{i+1}.❌({c_a.upper()})  "
 
+            # Yozuv uzun bo'lib ketmasligi uchun har 5 ta savoldan keyin pastga tushiramiz
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
 
@@ -552,9 +541,7 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga natija: nechta to'g'ri va qaysi savollar qanday bo'lgani.
-        # Rush testda daraja (C/B/A va h.k.) aytilmaydi — u faqat export
-        # faylida, barcha ishtirokchilar bo'yicha hisoblanadi.
+        # O'quvchiga natija (qaysiga to'g'ri/xato) - Daraja aytilmaydi
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
@@ -564,12 +551,12 @@ def handle_web_app(msg):
         )
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
 
-        # Xuddi shu natijani barcha adminlarga ham darhol yuboramiz.
+        # Adminga ham ayni shu ixcham analiz bilan boradi
         admin_msg = (
             f"📥 *Yangi natija keldi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
             f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdi\n\n"
+            f"🎯 *Natija:* {score} / {total_q}\n\n"
             f"📝 *Batafsil tahlil:*\n{analysis_text}"
         )
         for admin_id in get_admin_chat_ids():
