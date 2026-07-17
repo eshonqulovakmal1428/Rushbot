@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 TOKEN       = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
 SUPER_ADMIN = int(os.environ.get("ADMIN_ID", "5541008041"))
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://eshoonqulov-math-testbot.netlify.app/")
-RUSH_WEB_APP_URL = "https://mathbothtml.netlify.app/"
+RUSH_WEB_APP_URL = os.environ.get("RUSH_WEB_APP_URL", "https://mathbothtml.netlify.app/")
 _domain     = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 RAILWAY_URL = f"https://{_domain}" if _domain else os.environ.get("RAILWAY_URL", "")
 DB_PATH     = os.environ.get("DB_PATH", "testlar_bazasi.db")
@@ -364,21 +364,16 @@ def _student_code_entered(msg):
                  html_link=html_link)
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    # TELEGRAM KESHINI MAJBURIY YANGILASH UCHUN KESH-BASTER (&v=3) QO'SHILDI
     if test_type == "html":
-        kb.add(types.KeyboardButton(
-            "📱 Testni boshlash",
-            web_app=types.WebAppInfo(url=html_link)
-        ))
+        final_link = f"{html_link}&v=3" if "?" in html_link else f"{html_link}?v=3"
+        kb.add(types.KeyboardButton("📱 Testni boshlash", web_app=types.WebAppInfo(url=final_link)))
     elif test_type == "rush":
-        kb.add(types.KeyboardButton(
-            "📱 Rush Testni boshlash",
-            web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}")
-        ))
+        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}&v=3")))
     else:
-        kb.add(types.KeyboardButton(
-            "📱 Javoblarni belgilash",
-            web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}")
-        ))
+        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}&v=3")))
+        
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     
     test_info_msg = f"✅ *Test topildi!*\n🔢 Kod: `{code}`\n"
@@ -508,7 +503,6 @@ def handle_web_app(msg):
                     t_score = 50 + (15 * theta)
                     t_score = max(0, min(100, round(t_score, 2)))
 
-                    # 15 TA TO'G'RI JAVOB CHEGARASI VA YANGILANGAN SHKALA (A+ >= 70, A >= 65)
                     if score < 15:
                         grade = "Natija yo'q (O'tmadi) ❌"
                     else:
@@ -658,9 +652,11 @@ def _admin_base_deadline(msg):
     update_state(msg.chat.id, deadline=deadline, action="admin_save")
     state = get_state(msg.chat.id)
     kb    = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    # BU YERGA HAM KESH FILTRI QO'SHILDI
     kb.add(types.KeyboardButton(
         "🛠 Javoblarni kiritish",
-        web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={state['count']}")
+        web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={state['count']}&v=3")
     ))
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     
@@ -771,7 +767,6 @@ def _admin_show_results(msg):
             theta = calculate_rasch_theta(score, b_items)
             t_score = max(0, min(100, round(50 + (15 * theta), 2)))
             
-            # ADMIN JADVALI UCHUN HAM 15 TA FILTRI VA YANGILANGAN SHKALA
             if score < 15:
                 grade = "O'tmadi"
             else:
