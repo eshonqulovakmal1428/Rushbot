@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 # Konfiguratsiya
 TOKEN       = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
 SUPER_ADMIN = int(os.environ.get("ADMIN_ID", "5541008041"))
-WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://calm-unicorn-a27c2c.netlify.app/")
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://lucent-medovik-bd159a.netlify.app/")
 RUSH_WEB_APP_URL = os.environ.get("RUSH_WEB_APP_URL", "https://mathbothtml.netlify.app/")
 _domain     = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 RAILWAY_URL = f"https://{_domain}" if _domain else os.environ.get("RAILWAY_URL", "")
