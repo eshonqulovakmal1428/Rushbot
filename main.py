@@ -196,6 +196,16 @@ def set_commands():
 
 set_commands()
 
+# --- Darajani Aniqlash ---
+def get_certificate_level(score_100):
+    if score_100 >= 70: return "A+"
+    elif score_100 >= 65: return "A"
+    elif score_100 >= 60: return "B+"
+    elif score_100 >= 55: return "B"
+    elif score_100 >= 50: return "C+"
+    elif score_100 >= 46: return "C"
+    else: return "Sertifikatsiz"
+
 # --- Asosiy Buyruqlar ---
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
@@ -301,7 +311,6 @@ def _student_code_entered(msg):
     if is_back(msg.text): return go_home(msg)
     code = msg.text.strip().upper()
     
-    # FAQAT 1 MARTA ISHLASH MUMKINLIGINI TEKSHIRISH
     count = db_fetch("SELECT COUNT(*) FROM results WHERE user_id=? AND code=?", (msg.chat.id, code), one=True)
     if count and count[0] >= 1:
         safe_send(msg.chat.id, "⚠️ Siz bu testni allaqachon ishlagansiz!\nHar bir testga faqat *1 marta* javob yuborish mumkin.", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
@@ -404,28 +413,42 @@ def _admin_export_results(msg):
     output = io.StringIO()
     writer = csv.writer(output)
     
+    # 4 ta aniq ustun yoziladi, ortiqcha ma'lumotlarsiz
+    writer.writerow(["Ism va Familiya", "To'g'ri javoblar", "Olgan bali", "Daraja"])
+    
     if test_type == "rush":
-        writer.writerow(["Ism va Familiya", "To'g'ri javoblar", "Jami savol", "Rasch darajasi (Theta)", "Topshirilgan vaqt"])
         b_items = get_rasch_item_difficulties(code, total_q)
-        
         for r in rows:
             user_id, name, score, total, created_at = r
             theta = calculate_rasch_theta(score, b_items)
-            writer.writerow([name, score, total, round(theta, 3), created_at])
+            
+            # Theta(-3 dan +3) ni 0-100 ballga o'tkazish formulasi
+            score_100 = round((theta + 3.0) / 6.0 * 100)
+            
+            # Agar 15 ta yoki undan ko'p topsa, lekin bali 46 dan past bo'lsa - sun'iy 46 (C) berish
+            if score >= 15 and score_100 < 46:
+                score_100 = 46
+                
+            score_100 = max(0, min(100, score_100)) # 0 va 100 oraliqdan chiqib ketmasligi uchun
+            level = get_certificate_level(score_100)
+            
+            writer.writerow([name, score, score_100, level])
     else:
-        writer.writerow(["Ism va Familiya", "To'g'ri javoblar", "Jami savol", "Topshirilgan vaqt"])
+        # Oddiy test bo'lsa, proporsiya usulida (Foiz)
         for r in rows:
             user_id, name, score, total, created_at = r
-            writer.writerow([name, score, total, created_at])
+            score_100 = round((score / total) * 100) if total > 0 else 0
+            level = get_certificate_level(score_100)
+            writer.writerow([name, score, score_100, level])
 
-    # O'zbek harflari (o', g') to'g'ri ko'rinishi uchun utf-8-sig
+    # O'zbek harflari to'g'ri ko'rinishi uchun utf-8-sig
     mem_file = io.BytesIO(output.getvalue().encode('utf-8-sig'))
     mem_file.name = f"{code}_natijalar.csv"
 
     bot.send_document(
         msg.chat.id, 
         mem_file, 
-        caption=f"📊 *{code}* - test bo'yicha o'quvchilarning joriy natijalari.\n*(Ushbu holat barcha bazaga saqlangan javoblar asosida dinamik hisoblandi)*", 
+        caption=f"📊 *{code}* - test bo'yicha tozalangan natijalar fayli.", 
         parse_mode="Markdown",
         reply_markup=main_menu(msg.chat.id)
     )
@@ -480,16 +503,17 @@ def handle_web_app(msg):
         analysis_text = ""
         ans_bin = ""
 
+        # Tahlil matnini chiroyli yig'ish (to'g'ri/xato ajratish)
         for i in range(total_q):
             u_a = user_answers[i]
             c_a = correct_answers[i]
             if u_a == c_a:
                 score += 1
                 ans_bin += "1"
-                analysis_text += f"*{i+1}.* ✅ "
+                analysis_text += f"*{i+1}.* ✅  "
             else:
                 ans_bin += "0"
-                analysis_text += f"*{i+1}.* ❌ (To'g'ri: {c_a.upper()}) "
+                analysis_text += f"*{i+1}.* ❌(T: {c_a.upper()})  "
             
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
@@ -502,14 +526,27 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
+        # Xabar shabloni
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
             f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q}\n\n"
-            f"📝 *Batafsil tahlil:*\n{analysis_text}"
+            f"🎯 *To'g'ri javoblar:* {score} / {total_q}\n\n"
+            f"📝 *Javoblar tahlili:*\n{analysis_text}"
         )
+        
+        # 1. O'quvchiga yuborish
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+        
+        # 2. Super Adminga va Barcha Adminlarga xabar yuborish
+        admin_alert = f"🔔 *Yangi natija topshirildi!*\n\n{result_msg}"
+        safe_send(SUPER_ADMIN, admin_alert, parse_mode="Markdown")
+        
+        other_admins = db_fetch("SELECT user_id FROM admins")
+        for a in other_admins:
+            if a[0] != SUPER_ADMIN:
+                safe_send(a[0], admin_alert, parse_mode="Markdown")
+                
         return
 
     safe_send(msg.chat.id, "✅ Ma'lumot qabul qilindi.", reply_markup=main_menu(msg.chat.id))
