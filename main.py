@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 TOKEN       = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
 SUPER_ADMIN = int(os.environ.get("ADMIN_ID", "5541008041"))
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://eshoonqulov-math-testbot.netlify.app/")
+RUSH_WEB_APP_URL = "https://mathbothtml.netlify.app/"
 _domain     = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 RAILWAY_URL = f"https://{_domain}" if _domain else os.environ.get("RAILWAY_URL", "")
 DB_PATH     = os.environ.get("DB_PATH", "testlar_bazasi.db")
@@ -118,7 +119,6 @@ def init_db():
         name     TEXT NOT NULL,
         added_at TEXT DEFAULT (datetime('now','+5 hours'))
     )""")
-    # ── YANGILANISH: RASCH MODEL UCHUN BA'ZA ──
     db_exec("""CREATE TABLE IF NOT EXISTS rasch_answers (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         test_code   TEXT NOT NULL,
@@ -148,20 +148,16 @@ def main_menu(chat_id):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add(
         types.KeyboardButton("📝 Test ishlash"),
-        types.KeyboardButton("📊 Natijalarim"),
+        types.KeyboardButton("📈 Rush model Test"),
     )
-    # Ushbu tugma oldingi html webapp uchun
     kb.add(
-        types.KeyboardButton(
-            "📈 Rush test WebApp", 
-            web_app=types.WebAppInfo(url="https://mathbothtml.netlify.app/")
-        )
+        types.KeyboardButton("📊 Natijalarim"),
     )
     if is_admin(chat_id):
         kb.add(
             types.KeyboardButton("➕ Yangi test qo'shish"),
             types.KeyboardButton("➕ HTML test qo'shish"),
-            types.KeyboardButton("➕ Rush test qo'shish") # ── YANGI TUGMA ──
+            types.KeyboardButton("➕ Rush test qo'shish")
         )
         kb.add(types.KeyboardButton("📊 Natijalarni olish"))
     if is_super_admin(chat_id):
@@ -263,42 +259,30 @@ def cmd_my_results(msg):
               parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
 
 # ─────────────────────────────────────────
-#  RASCH MATEMATIK HISOB-KITOB (YANGI)
+#  RASCH MATEMATIK HISOB-KITOB
 # ─────────────────────────────────────────
 def get_rasch_item_difficulties(code, total_q):
-    """Bazada yig'ilgan javoblardan har bir savolning obektiv qiyinligini aniqlash"""
     rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
-    # Agar ishtirokchilar kam bo'lsa (masalan 3 kishi), qiyinlikni 0 deb olib turadi (hali ma'lumot yetarli emas)
     if not rows or len(rows) < 3:
         return [0.0] * total_q
     
     difficulties = []
     n_users = len(rows)
     for i in range(total_q):
-        # Necha kishi shu i-savolni to'g'ri topgan?
         correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
         p = correct_count / n_users
-        
-        # Matematik xatolik (infinity) bermasligi uchun chegara
         p = max(0.05, min(0.95, p))
-        
-        # Logit formula: b = ln((1-p) / p)
-        # Oson savollar manfiy (-), qiyin savollar musbat (+) chiqadi
         b = math.log((1 - p) / p)
         difficulties.append(b)
         
     return difficulties
 
 def calculate_rasch_theta(score, b_items):
-    """Maksimal ehtimollik (Newton-Raphson) orqali abituriyent qobiliyatini (theta) topish"""
     total_q = len(b_items)
     if score <= 0: return -3.0
     if score >= total_q: return 3.0
     
-    # Boshlang'ich taxmin
     theta = math.log(score / (total_q - score))
-    
-    # 10 marta iteratsiya
     for _ in range(10):
         prob_sum = 0
         info_sum = 0
@@ -322,7 +306,7 @@ def calculate_rasch_theta(score, b_items):
 #  TEST ISHLASH BO'LIMI
 # ─────────────────────────────────────────
 @bot.message_handler(commands=["test"])
-@bot.message_handler(func=lambda m: m.text == "📝 Test ishlash")
+@bot.message_handler(func=lambda m: m.text in ["📝 Test ishlash", "📈 Rush model Test"])
 def cmd_student(msg):
     user = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
     if not user:
@@ -345,7 +329,7 @@ def _student_code_entered(msg):
         safe_send(msg.chat.id,
                   "⚠️ Siz bu testni allaqachon *2 marta* ishlagansiz!\n"
                   "Boshqa test kodini kiriting.",
-                  parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+                  reply_markup=main_menu(msg.chat.id))
         return
 
     row = db_fetch(
@@ -385,8 +369,12 @@ def _student_code_entered(msg):
             "📱 Testni boshlash",
             web_app=types.WebAppInfo(url=html_link)
         ))
+    elif test_type == "rush":
+        kb.add(types.KeyboardButton(
+            "📱 Rush Testni boshlash",
+            web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}")
+        ))
     else:
-        # Rush va PDF uchun bir xil interfeys (javoblarni kiritish)
         kb.add(types.KeyboardButton(
             "📱 Javoblarni belgilash",
             web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}")
@@ -395,12 +383,11 @@ def _student_code_entered(msg):
     
     test_info_msg = f"✅ *Test topildi!*\n🔢 Kod: `{code}`\n"
     if test_type == "rush":
-        test_info_msg += "⚡️ *Bu test Rasch model (BMBA tizimi) orqali baholanadi!*\n\n"
+        test_info_msg += "⚡️ *Bu test Rasch model (BMBA tizimi) orqali baholanadi!*\n⚠️ *Chegara:* Kamida 15 ta to'g'ri javob topilishi shart.\n\n"
     test_info_msg += "Boshlash uchun tugmani bosing 👇"
 
     safe_send(msg.chat.id, test_info_msg, parse_mode="Markdown", reply_markup=kb)
 
-# ── YANGILANGAN: NATIVE PDF YARATISH FUNKSIYASI ──
 def _generate_and_send_pdf(chat_id, user_name, score, total, details):
     filename = f"Natija_{chat_id}_{int(get_uz_now().timestamp())}.pdf"
     try:
@@ -452,7 +439,6 @@ def handle_web_app(msg):
     try:
         raw_data = msg.web_app_data.data.strip()
         
-        # Eskicha JSON kelsa o'qish uchun (oldingi funksiya qoldi)
         try:
             data = json.loads(raw_data)
             if data.get("type") == "rush_test":
@@ -464,9 +450,8 @@ def handle_web_app(msg):
         state  = get_state(msg.chat.id)
         action = state.get("action")
 
-        # ── ADMIN: Javoblarni saqlash ──
         if action == "admin_save":
-            test_type = state.get("test_type", "pdf") # pdf yoki rush
+            test_type = state.get("test_type", "pdf")
             db_exec(
                 "INSERT OR REPLACE INTO tests (code, answers, deadline, type, link) "
                 "VALUES (?,?,?,?,?)",
@@ -477,7 +462,6 @@ def handle_web_app(msg):
                       reply_markup=main_menu(msg.chat.id))
             return
 
-        # ── TALABA: natijalarni baholash ──
         if action == "student_solve":
             test_type = state.get("type", "pdf")
             name      = state.get("name", "Noma'lum")
@@ -513,59 +497,58 @@ def handle_web_app(msg):
                         analysis.append(f"{i}❌({c.upper()})")
                         
                 grid = "\n".join(" ".join(analysis[i:i+5]) for i in range(0, len(analysis), 5))
-
                 bar = progress_bar(score, total)
 
-                # ── RASCH MODEL TEKSHIRUVI (RUSH) ──
                 if test_type == "rush":
-                    # Matritsaga 0/1 larni kiritamiz
                     db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?, ?)", (code, bin_str))
                     
-                    # Approbatsiya va Thetani hisoblaymiz
                     b_items = get_rasch_item_difficulties(code, total)
                     theta = calculate_rasch_theta(score, b_items)
                     
-                    # T-ball formulasiga solish (Normalizatsiya 50, standard error ~15)
                     t_score = 50 + (15 * theta)
-                    t_score = max(0, min(100, round(t_score, 1)))
+                    t_score = max(0, min(100, round(t_score, 2)))
 
-                    # Darajani belgilash: Sizning "Minimal 15 ta C beradi" degan talabingiz
+                    # 15 TA TO'G'RI JAVOB CHEGARASI VA YANGILANGAN SHKALA (A+ >= 70, A >= 65)
                     if score < 15:
                         grade = "Natija yo'q (O'tmadi) ❌"
                     else:
-                        # 15 dan keyingi qadamlarni proporsional bo'lib chiqamiz
-                        step = (total - 15) / 3 
-                        if score < 15 + step:
-                            grade = "C Daraja (Qoniqarli) 🥉"
-                        elif score < 15 + 2 * step:
+                        if t_score >= 70:
+                            grade = "A+ Daraja (Eng oliy) 🥇"
+                        elif t_score >= 65:
+                            grade = "A Daraja (Oliy) 🥇"
+                        elif t_score >= 60:
+                            grade = "B+ Daraja (Yuqori) 🥈"
+                        elif t_score >= 55:
                             grade = "B Daraja (Yaxshi) 🥈"
+                        elif t_score >= 50:
+                            grade = "C+ Daraja (O'rta) 🥉"
+                        elif t_score >= 46:
+                            grade = "C Daraja (Qoniqarli) 🥉"
                         else:
-                            grade = "A Daraja (A'lo) 🥇"
+                            grade = "Natija yo'q (O'tmadi) ❌"
 
                     result_text = (
                         f"👤 *{name}*\n"
                         f"🔢 Kod: `{code}` (Rasch Baholash)\n"
-                        f"📊 Natija: *{score}/{total}*\n"
-                        f"📈 T-ball: *{t_score}*\n"
-                        f"🎓 Sertifikat daraja: *{grade}*\n"
+                        f"📊 To'g'ri javoblar: *{score}/{total}*\n"
+                        f"📈 Umumiy to'plagan bali: *{t_score}*\n"
+                        f"🎓 Sertifikat darajasi: *{grade}*\n"
                         f"{bar}\n\n"
                         f"📋 *Tahlil:*\n{grid}"
                     )
                     
-                    # PDF xulosani jo'natish
                     pdf_details = [
                         f"Test kodi: {code} (Rasch Model)",
                         f"To'g'ri javoblar: {score} ta",
-                        f"T-ball shkalasi: {t_score}",
+                        f"Umumiy to'plagan bali: {t_score}",
                         f"Sertifikat darajasi: {grade}",
                         " ",
                         "Javoblar tahlili:"
                     ] + [ " ".join(analysis[i:i+5]) for i in range(0, len(analysis), 5) ]
                     
-                    # Asosiy javobni ham PDFni ham bitta qilib jo'natamiz
                     _generate_and_send_pdf(msg.chat.id, name, score, total, pdf_details)
 
-                else: # Oddiy PDF test
+                else:
                     result_text = (
                         f"👤 *{name}*\n"
                         f"🔢 Kod: `{code}`\n"
@@ -628,7 +611,7 @@ def admin_add_pdf(msg):
         bot.register_next_step_handler(m, _admin_base_code, "pdf")
 
 # ─────────────────────────────────────────
-#  ADMIN: RUSH TEST QO'SHISH (YANGI)
+#  ADMIN: RUSH TEST QO'SHISH
 # ─────────────────────────────────────────
 @bot.message_handler(func=lambda m: m.text == "➕ Rush test qo'shish")
 def admin_add_rush(msg):
@@ -649,7 +632,7 @@ def _admin_base_code(msg, test_type):
         count = int(parts[1])
         set_state(msg.chat.id, {"action": "admin_save_deadline", "code": code, "count": count, "test_type": test_type})
         m = safe_send(msg.chat.id,
-                      "📅 Yopilish vaqtini kiriting\n_(Misol: 2025-12-31 18:00)_ yoki *0* (cheksiz)",
+                      "📅 Yopilish vaqtini kiriting\n_(Misol: 2026-12-31 18:00)_ yoki *0* (cheksiz)",
                       parse_mode="Markdown", reply_markup=back_kb())
         if m:
             bot.register_next_step_handler(m, _admin_base_deadline)
@@ -746,7 +729,7 @@ def _admin_html_save(msg):
               parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
 
 # ─────────────────────────────────────────
-#  ADMIN: NATIJALARNI KO'RISH
+#  ADMIN: NATIJALARNI KO'RISH (JADVAL BILAN)
 # ─────────────────────────────────────────
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
 def admin_get_results(msg):
@@ -760,19 +743,60 @@ def _admin_show_results(msg):
     if is_back(msg.text):
         return go_home(msg)
     code = msg.text.strip().upper()
+    
+    test_row = db_fetch("SELECT type, answers FROM tests WHERE code=?", (code,), one=True)
+    if not test_row:
+        safe_send(msg.chat.id, f"❌ `{code}` kodi bo'yicha test topilmadi.",
+                  reply_markup=main_menu(msg.chat.id))
+        return
+        
+    test_type, answers = test_row
     rows = db_fetch(
         "SELECT name, score, total FROM results WHERE code=? ORDER BY score DESC",
         (code,)
     )
     if not rows:
-        safe_send(msg.chat.id, f"❌ `{code}` kodi bo'yicha natija topilmadi.",
-                  parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+        safe_send(msg.chat.id, f"❌ `{code}` kodi bo'yicha hali natija yo'q.",
+                  reply_markup=main_menu(msg.chat.id))
         return
 
-    lines = [f"📊 *{code}* natijalari — jami: {len(rows)} ta\n"]
-    for i, (name, score, total) in enumerate(rows, 1):
-        bar = progress_bar(score, total)
-        lines.append(f"{i}. *{name}* — `{score}/{total}`\n{bar}\n")
+    if test_type == "rush":
+        total_q = len(answers)
+        b_items = get_rasch_item_difficulties(code, total_q)
+        
+        lines = [f"📊 *{code}* (Rush model) natijalari — jami: {len(rows)} ta\n"]
+        lines.append("`Ism Familiya       | To'g'ri | Ball  | Daraja`")
+        lines.append("`---------------------------------------------`")
+        for i, (name, score, total) in enumerate(rows, 1):
+            theta = calculate_rasch_theta(score, b_items)
+            t_score = max(0, min(100, round(50 + (15 * theta), 2)))
+            
+            # ADMIN JADVALI UCHUN HAM 15 TA FILTRI VA YANGILANGAN SHKALA
+            if score < 15:
+                grade = "O'tmadi"
+            else:
+                if t_score >= 70:
+                    grade = "A+"
+                elif t_score >= 65:
+                    grade = "A"
+                elif t_score >= 60:
+                    grade = "B+"
+                elif t_score >= 55:
+                    grade = "B"
+                elif t_score >= 50:
+                    grade = "C+"
+                elif t_score >= 46:
+                    grade = "C"
+                else:
+                    grade = "O'tmadi"
+                    
+            padded_name = (name[:17] + "..") if len(name) > 17 else name.ljust(19)
+            lines.append(f"`{i}. {padded_name} | {str(score).rjust(2)}/{total_q}   | {t_score:<5} | {grade}`")
+    else:
+        lines = [f"📊 *{code}* natijalari — jami: {len(rows)} ta\n"]
+        for i, (name, score, total) in enumerate(rows, 1):
+            bar = progress_bar(score, total)
+            lines.append(f"{i}. *{name}* — `{score}/{total}`\n{bar}\n")
 
     full = "\n".join(lines)
     for chunk in [full[i:i+4000] for i in range(0, len(full), 4000)]:
@@ -845,7 +869,7 @@ def _add_admin_id(msg):
 def _add_admin_name(msg):
     if is_back(msg.text):
         return go_home(msg)
-    state  = get_state(msg.chat.id)
+    state = get_state(msg.chat.id)
     new_id = state.get("new_admin_id")
     name   = msg.text.strip()
     if not name or len(name) > 100:
