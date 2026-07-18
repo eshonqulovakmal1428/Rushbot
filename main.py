@@ -203,6 +203,32 @@ def set_commands():
 
 set_commands()
 
+
+# YANGI: Javoblarni "Ro'yxat" (List) shaklida ajratib oluvchi funksiya
+def extract_answers_list(raw_data):
+    try:
+        data = json.loads(raw_data)
+        if isinstance(data, list):
+            return [str(x).strip().lower() for x in data]
+        elif isinstance(data, dict):
+            if "answers" in data:
+                ans = data["answers"]
+                if isinstance(ans, list):
+                    return [str(x).strip().lower() for x in ans]
+                elif isinstance(ans, dict):
+                    return [str(v).strip().lower() for k, v in sorted(ans.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
+            else:
+                return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
+        return [str(data).strip().lower()]
+    except Exception:
+        # JSON bo'lmasa va vergul bilan jo'natilsa
+        text = raw_data.strip().lower()
+        if "," in text:
+            return [x.strip() for x in text.split(",")]
+        else:
+            # Eski "abcd" kabi matnlarni harflarga ajratish uchun
+            return list(text)
+
 # --- Asosiy Buyruqlar ---
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
@@ -295,12 +321,10 @@ def calculate_rasch_theta(score, b_items):
     return theta
 
 def theta_to_ball(theta):
-    """Rasch theta qiymatini 100 ballik shkalaga o'giradi (logistik egri chiziq orqali)."""
     p = 1 / (1 + math.exp(-theta))
     return round(p * 100, 1)
 
 def get_daraja(ball):
-    """Sertifikat darajasini aniq 5 ballik qadamlar bilan qaytaradi."""
     if ball >= 70:
         return "A+"
     elif 65 <= ball < 70:
@@ -342,13 +366,21 @@ def _student_code_entered(msg):
         return
 
     answers, deadline, test_type, html_link = row
+    
+    # Oldingi eski testlar yoki yangi ro'yxat ekanligini tekshiramiz
+    try:
+        correct_list = json.loads(answers)
+        q_count = len(correct_list) if isinstance(correct_list, list) else len(answers)
+    except:
+        q_count = len(answers)
+
     update_state(msg.chat.id, code=code, correct=answers, type=test_type, html_link=html_link)
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if test_type == "rush":
-        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}&v=4")))
+        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={q_count}&v=4")))
     else:
-        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}&v=4")))
+        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={q_count}&v=4")))
 
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     safe_send(msg.chat.id, f"✅ *Test topildi!*\n🔢 Kod: `{code}`", parse_mode="Markdown", reply_markup=kb)
@@ -420,40 +452,41 @@ def _admin_export_results(msg):
         safe_send(msg.chat.id, "❌ Bu kod bo'yicha test topilmadi.", reply_markup=main_menu(msg.chat.id))
         return
 
-    test_type, correct_answers = test_info
-    total_q = len(correct_answers)
+    test_type, answers_raw = test_info
+    try:
+        correct_list = json.loads(answers_raw)
+        total_q = len(correct_list) if isinstance(correct_list, list) else len(answers_raw)
+    except:
+        total_q = len(answers_raw)
 
-    rows = db_fetch("SELECT user_id, name, score, total, created_at FROM results WHERE code=? ORDER BY score DESC, created_at ASC", (code,))
+    rows = db_fetch("SELECT user_id, name, score, total, analysis_text, created_at FROM results WHERE code=? ORDER BY score DESC, created_at ASC", (code,))
 
     if not rows:
         safe_send(msg.chat.id, "❌ Bu test bo'yicha hech qanday natija topilmadi.", reply_markup=main_menu(msg.chat.id))
         return
 
     output = io.StringIO()
-    writer = csv.writer(output)
+    output.write('\ufeff')
+    writer = csv.writer(output, delimiter=';')
     
-    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
+    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja", "Batafsil Tahlil"])
 
     if test_type == "rush":
         b_items = get_rasch_item_difficulties(code, total_q)
         for r in rows:
-            user_id, name, score, total, created_at = r
+            user_id, name, score, total, analysis_text, created_at = r
             theta = calculate_rasch_theta(score, b_items)
             ball = theta_to_ball(theta)
-            
-            # Shart: 15 tadan kam savolga to'g'ri javob berganlarga "C" ham berilmasin
-            if score < 15:
-                daraja = "—"
-            else:
-                daraja = get_daraja(ball)
-
-            writer.writerow([name, score, ball, daraja])
+            daraja = "—" if score < 15 else get_daraja(ball)
+            clean_analysis = analysis_text.replace("\n", " ") if analysis_text else ""
+            writer.writerow([name, score, ball, daraja, clean_analysis])
     else:
         for r in rows:
-            user_id, name, score, total, created_at = r
+            user_id, name, score, total, analysis_text, created_at = r
             ball = round((score / total) * 100, 1) if total else 0.0
             daraja = get_daraja(ball)
-            writer.writerow([name, score, ball, daraja])
+            clean_analysis = analysis_text.replace("\n", " ") if analysis_text else ""
+            writer.writerow([name, score, ball, daraja, clean_analysis])
 
     mem_file = io.BytesIO(output.getvalue().encode('utf-8-sig'))
     mem_file.name = f"{code}_natijalar.csv"
@@ -475,51 +508,49 @@ def handle_web_app(msg):
     # 1. Admin javob kalitini kiritganda
     if state.get("action") == "admin_save":
         test_type = state.get("test_type", "pdf")
-
-        answers_str = raw_data.lower()
-        try:
-            data = json.loads(raw_data)
-            if isinstance(data, list):
-                answers_str = "".join(data).lower()
-            elif isinstance(data, dict) and "answers" in data:
-                answers_str = "".join(data["answers"]).lower()
-        except:
-            pass
+        
+        # Yangi tizimda javoblarni JSON formatdagi LIST ko'rinishida saqlaymiz.
+        answers_list = extract_answers_list(raw_data)
+        answers_json_str = json.dumps(answers_list)
 
         db_exec("INSERT OR REPLACE INTO tests (code, answers, deadline, type, link) VALUES (?,?,?,?,?)",
-                (state["code"], answers_str, state.get("deadline", "0"), test_type, ""))
+                (state["code"], answers_json_str, state.get("deadline", "0"), test_type, ""))
         clear_state(msg.chat.id)
-        safe_send(msg.chat.id, f"✅ {test_type.upper()} testi bazaga muvaffaqiyatli saqlandi!", reply_markup=main_menu(msg.chat.id))
+        safe_send(msg.chat.id, f"✅ {test_type.upper()} testi bazaga muvaffaqiyatli saqlandi! \n_(Barcha turdagi javoblar qo'llab-quvvatlanadi)_", reply_markup=main_menu(msg.chat.id))
         return
 
     # 2. O'quvchi javob yuborganda
     if state.get("action") == "student_solve":
         user_name = state.get("name")
         code = state.get("code")
-        correct_answers = state.get("correct", "").lower()
         test_type = state.get("type", "pdf")
-        total_q = len(correct_answers)
-
-        user_answers = raw_data.lower()
+        correct_answers_raw = state.get("correct", "")
+        
+        # Bazadagi javoblar oddiy matnmi yoki List'mi, farqlaymiz.
         try:
-            data = json.loads(raw_data)
-            if isinstance(data, list):
-                user_answers = "".join(data).lower()
-            elif isinstance(data, dict) and "answers" in data:
-                user_answers = "".join(data["answers"]).lower()
+            correct_answers = json.loads(correct_answers_raw)
+            if not isinstance(correct_answers, list):
+                correct_answers = list(str(correct_answers_raw).lower())
         except:
-            pass
+            correct_answers = list(str(correct_answers_raw).lower())
 
-        user_answers = user_answers[:total_q].ljust(total_q, ' ')
+        total_q = len(correct_answers)
+        
+        # O'quvchi WebApp dan yuborgan javoblar
+        user_answers = extract_answers_list(raw_data)
+        
+        # Agar o'quvchi ba'zi javoblarni qoldirib ketgan bo'lsa, to'ldirib qo'yamiz
+        while len(user_answers) < total_q:
+            user_answers.append("")
 
         score = 0
         analysis_text = ""
         ans_bin = ""
 
-        # O'quvchi javoblari tahlili (1.✅, 2.❌(A))
+        # O'quvchi javoblari tahlili (birma-bir elementlarni taqqoslaymiz)
         for i in range(total_q):
             u_a = user_answers[i]
-            c_a = correct_answers[i]
+            c_a = str(correct_answers[i]).strip().lower()
             
             if u_a == c_a:
                 score += 1
@@ -527,7 +558,12 @@ def handle_web_app(msg):
                 analysis_text += f"{i+1}.✅  "
             else:
                 ans_bin += "0"
-                analysis_text += f"{i+1}.❌({c_a.upper()})  "
+                
+                # Noto'g'ri bo'lganda, foydalanuvchiga to'g'ri javobni ko'rsatamiz
+                disp_c_a = c_a.upper() if len(c_a) == 1 else c_a
+                if not disp_c_a: disp_c_a = "-"
+                
+                analysis_text += f"{i+1}.❌({disp_c_a})  "
 
             # Yozuv uzun bo'lib ketmasligi uchun har 5 ta savoldan keyin pastga tushiramiz
             if (i + 1) % 5 == 0:
@@ -541,7 +577,7 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga natija (qaysiga to'g'ri/xato) - Daraja aytilmaydi
+        # O'quvchiga natija
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
@@ -551,7 +587,7 @@ def handle_web_app(msg):
         )
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
 
-        # Adminga ham ayni shu ixcham analiz bilan boradi
+        # Adminga
         admin_msg = (
             f"📥 *Yangi natija keldi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
