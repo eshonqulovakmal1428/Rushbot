@@ -203,8 +203,6 @@ def set_commands():
 
 set_commands()
 
-
-# YANGI: Javoblarni "Ro'yxat" (List) shaklida ajratib oluvchi funksiya
 def extract_answers_list(raw_data):
     try:
         data = json.loads(raw_data)
@@ -221,12 +219,10 @@ def extract_answers_list(raw_data):
                 return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
         return [str(data).strip().lower()]
     except Exception:
-        # JSON bo'lmasa va vergul bilan jo'natilsa
         text = raw_data.strip().lower()
         if "," in text:
             return [x.strip() for x in text.split(",")]
         else:
-            # Eski "abcd" kabi matnlarni harflarga ajratish uchun
             return list(text)
 
 # --- Asosiy Buyruqlar ---
@@ -325,20 +321,13 @@ def theta_to_ball(theta):
     return round(p * 100, 1)
 
 def get_daraja(ball):
-    if ball >= 70:
-        return "A+"
-    elif 65 <= ball < 70:
-        return "A"
-    elif 60 <= ball < 65:
-        return "B+"
-    elif 55 <= ball < 60:
-        return "B"
-    elif 50 <= ball < 55:
-        return "C+"
-    elif 46 <= ball < 50:
-        return "C"
-    else:
-        return "—"
+    if ball >= 70: return "A+"
+    elif 65 <= ball < 70: return "A"
+    elif 60 <= ball < 65: return "B+"
+    elif 55 <= ball < 60: return "B"
+    elif 50 <= ball < 55: return "C+"
+    elif 46 <= ball < 50: return "C"
+    else: return "—"
 
 # --- Student Test Solving ---
 @bot.message_handler(commands=["test"])
@@ -367,7 +356,6 @@ def _student_code_entered(msg):
 
     answers, deadline, test_type, html_link = row
     
-    # Oldingi eski testlar yoki yangi ro'yxat ekanligini tekshiramiz
     try:
         correct_list = json.loads(answers)
         q_count = len(correct_list) if isinstance(correct_list, list) else len(answers)
@@ -509,7 +497,6 @@ def handle_web_app(msg):
     if state.get("action") == "admin_save":
         test_type = state.get("test_type", "pdf")
         
-        # Yangi tizimda javoblarni JSON formatdagi LIST ko'rinishida saqlaymiz.
         answers_list = extract_answers_list(raw_data)
         answers_json_str = json.dumps(answers_list)
 
@@ -526,7 +513,6 @@ def handle_web_app(msg):
         test_type = state.get("type", "pdf")
         correct_answers_raw = state.get("correct", "")
         
-        # Bazadagi javoblar oddiy matnmi yoki List'mi, farqlaymiz.
         try:
             correct_answers = json.loads(correct_answers_raw)
             if not isinstance(correct_answers, list):
@@ -535,11 +521,8 @@ def handle_web_app(msg):
             correct_answers = list(str(correct_answers_raw).lower())
 
         total_q = len(correct_answers)
-        
-        # O'quvchi WebApp dan yuborgan javoblar
         user_answers = extract_answers_list(raw_data)
         
-        # Agar o'quvchi ba'zi javoblarni qoldirib ketgan bo'lsa, to'ldirib qo'yamiz
         while len(user_answers) < total_q:
             user_answers.append("")
 
@@ -547,10 +530,11 @@ def handle_web_app(msg):
         analysis_text = ""
         ans_bin = ""
 
-        # O'quvchi javoblari tahlili (birma-bir elementlarni taqqoslaymiz)
+        # YANGILANGAN QISM: Tahlil jarayonida hamma probellar o'chirib tekshiriladi
         for i in range(total_q):
-            u_a = user_answers[i]
-            c_a = str(correct_answers[i]).strip().lower()
+            # Probellarni olib tashlash (.replace(" ", ""))
+            u_a = str(user_answers[i]).replace(" ", "").lower()
+            c_a = str(correct_answers[i]).replace(" ", "").lower()
             
             if u_a == c_a:
                 score += 1
@@ -559,13 +543,12 @@ def handle_web_app(msg):
             else:
                 ans_bin += "0"
                 
-                # Noto'g'ri bo'lganda, foydalanuvchiga to'g'ri javobni ko'rsatamiz
-                disp_c_a = c_a.upper() if len(c_a) == 1 else c_a
+                # Agar nato'g'ri bo'lsa, adminga/o'quvchiga asl javobni chiroyli ko'rsatish
+                disp_c_a = str(correct_answers[i]).strip().upper() if len(str(correct_answers[i]).strip()) == 1 else str(correct_answers[i]).strip()
                 if not disp_c_a: disp_c_a = "-"
                 
                 analysis_text += f"{i+1}.❌({disp_c_a})  "
 
-            # Yozuv uzun bo'lib ketmasligi uchun har 5 ta savoldan keyin pastga tushiramiz
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
 
