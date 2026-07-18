@@ -6,7 +6,6 @@ import threading
 import math
 import csv
 import io
-import time
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
@@ -134,7 +133,6 @@ def init_db():
 
 init_db()
 
-# --- Avtomatik tozalash funksiyasi ---
 def clean_old_data():
     try:
         db_exec("DELETE FROM tests WHERE created_at <= datetime('now', '-7 days', '+5 hours')")
@@ -282,7 +280,8 @@ def cmd_my_results(msg):
         safe_send(msg.chat.id, "❌ Siz hali hech qanday test ishlamadingiz.", reply_markup=main_menu())
         return
     lines = ["📊 *Sizning natijalaringiz:*\n"]
-    for i, (code, score, total, created_at) in enumerate(rows, 1):
+    for i, row in enumerate(rows, 1):
+        code, score, total, created_at = row[0], row[1], row[2], row[3]
         bar = progress_bar(score, total)
         lines.append(f"*{i}.* Kod: `{code}` — `{score}/{total}`\n{bar}\n_{created_at}_\n")
     safe_send(msg.chat.id, "\n".join(lines), parse_mode="Markdown", reply_markup=main_menu())
@@ -318,9 +317,9 @@ def calculate_rasch_theta(score, b_items):
                 p = 1.0 if (theta - b) > 0 else 0.0
             prob_sum += p
             info_sum += p * (1 - p)
-            diff = prob_sum - score
-            if abs(diff) < 0.01: break
-            if info_sum > 0: theta -= diff / info_sum
+        diff = prob_sum - score
+        if abs(diff) < 0.01: break
+        if info_sum > 0: theta -= diff / info_sum
     return theta
 
 def theta_to_ball(theta):
@@ -329,30 +328,21 @@ def theta_to_ball(theta):
 
 # --- YANGI QAT'IY BAHOLASH TIZIMI (MS Testlar uchun) ---
 def get_ms_grade_and_ball(score, rasch_ball):
-    # Rasch model balini chegaraga solamiz (Unrealistic natijalar oldini olish uchun)
     if score < 15:
-        # C dan kam, hech qanday daraja yo'q
         return round(min(rasch_ball, 45.9), 1), "—"
     elif 15 <= score < 20:
-        # Daraja C: 46 - 49.9 ball
         return round(max(46.0, min(rasch_ball, 49.9)), 1), "C"
     elif 20 <= score < 24:
-        # Daraja C+: 50 - 54.9 ball
         return round(max(50.0, min(rasch_ball, 54.9)), 1), "C+"
     elif 24 <= score < 29:
-        # Daraja B: 55 - 59.9 ball
         return round(max(55.0, min(rasch_ball, 59.9)), 1), "B"
     elif 29 <= score < 35:
-        # Daraja B+: 60 - 64.9 ball
         return round(max(60.0, min(rasch_ball, 64.9)), 1), "B+"
     elif 35 <= score < 42:
-        # Daraja A: 65 - 69.9 ball
         return round(max(65.0, min(rasch_ball, 69.9)), 1), "A"
     else:
-        # score >= 42 -> Daraja A+: 70+ ball
         return round(max(70.0, rasch_ball), 1), "A+"
 
-# Odatiy testlar uchun standart daraja berish qoidasi
 def get_daraja(ball):
     if ball >= 70: return "A+"
     elif 65 <= ball < 70: return "A"
@@ -379,7 +369,7 @@ def _student_code_entered(msg):
 
     count = db_fetch("SELECT COUNT(*) FROM results WHERE user_id=? AND code=?", (msg.chat.id, code), one=True)
     if count and count[0] >= 1:
-        safe_send(msg.chat.id, "⚠️ Siz bu testni allaqachon ishlagansiz!\nHar bir testga faqat *1 marta* javob yuborish mumkin.", parse_mode="Markdown", reply_markup=main_menu())
+        safe_send(msg.chat.id, "⚠️ Siz bu testni allaqachon ishlagansiz!\nHar bir testga faqat *1 marta* javob yuborish mumkin.", reply_markup=main_menu())
         return
 
     row = db_fetch("SELECT answers, deadline, type, link FROM tests WHERE code=?", (code,), one=True)
@@ -388,7 +378,7 @@ def _student_code_entered(msg):
         if m: bot.register_next_step_handler(m, _student_code_entered)
         return
 
-    answers, deadline, test_type, html_link = row
+    answers, deadline, test_type, html_link = row[0], row[1], row[2], row[3]
     
     try:
         correct_list = json.loads(answers)
@@ -407,7 +397,7 @@ def _student_code_entered(msg):
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     safe_send(msg.chat.id, f"✅ *Test topildi!*\n🔢 Kod: `{code}`", parse_mode="Markdown", reply_markup=kb)
 
-# --- Add Tests (Barcha uchun) ---
+# --- Add Tests ---
 @bot.message_handler(func=lambda m: m.text == "➕ Odatiy test qo'shish")
 def user_add_pdf(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
@@ -431,7 +421,6 @@ def _user_base_code_pdf(msg):
 def user_add_rush(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
     clean_old_data()
-    # MS test uchun test kodini va sonlarni so'rash o'tkazib yuboriladi, count standart 55.
     set_state(msg.chat.id, {"action": "admin_save_deadline", "count": 55, "test_type": "rush"})
     m = safe_send(msg.chat.id, "📅 Yopilish vaqtini kiriting\n_(Misol: 2026-12-31 18:00)_ yoki *0*", parse_mode="Markdown", reply_markup=back_kb())
     if m: bot.register_next_step_handler(m, _user_base_deadline)
@@ -455,22 +444,16 @@ def _user_base_deadline(msg):
 
     if test_type == "rush":
         url_with_params = f"{target_url}?count=55&v=5"
-        kb.add(types.KeyboardButton(
-            "🛠 Javoblarni kiritish",
-            web_app=types.WebAppInfo(url=url_with_params)
-        ))
+        kb.add(types.KeyboardButton("🛠 Javoblarni kiritish", web_app=types.WebAppInfo(url=url_with_params)))
         kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
         safe_send(msg.chat.id, f"✅ *Tayyor!*\n📅 *Muddat:* {deadline}\n\nTugmani bosib ilovada **test kodini** va to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
     else:
         url_with_params = f"{target_url}?count={state['count']}&v=5"
-        kb.add(types.KeyboardButton(
-            "🛠 Javoblarni kiritish",
-            web_app=types.WebAppInfo(url=url_with_params)
-        ))
+        kb.add(types.KeyboardButton("🛠 Javoblarni kiritish", web_app=types.WebAppInfo(url=url_with_params)))
         kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
         safe_send(msg.chat.id, f"✅ *Kod:* `{state.get('code', '')}` (Odatiy)\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
 
-# --- Get Results & Export (Tuzatilgan, kafolatlangan fayl yuborish) ---
+# --- Get Results & Export (100% Tuzatilgan va Kafolatlangan qism) ---
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
 def user_get_results(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
@@ -486,7 +469,7 @@ def _user_export_results(msg):
         safe_send(msg.chat.id, "❌ Bu kod bo'yicha test topilmadi.", reply_markup=main_menu())
         return
 
-    test_type, answers_raw, creator_id = test_info
+    test_type, answers_raw, creator_id = test_info[0], test_info[1], test_info[2]
     
     if msg.chat.id != creator_id and msg.chat.id != SUPER_ADMIN:
         safe_send(msg.chat.id, "❌ Ushbu test natijalarini faqat uni yaratgan odam yuklab ololadi.", reply_markup=main_menu())
@@ -506,46 +489,37 @@ def _user_export_results(msg):
 
     try:
         output = io.StringIO()
-        output.write('\ufeff') # UTF-8 kodirovkasi buzilmasligi uchun
         writer = csv.writer(output, delimiter=';')
-        
-        # Faylda faqat kerakli 4 ta ustun
         writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
 
         if test_type == "rush":
             b_items = get_rasch_item_difficulties(code, total_q)
             for r in rows:
-                user_id, name, score, total, analysis_text, created_at = r
+                name, score = r[1], r[2]
                 theta = calculate_rasch_theta(score, b_items)
                 raw_ball = theta_to_ball(theta)
-                
-                # Yangi chegaralangan baholash
                 ball, daraja = get_ms_grade_and_ball(score, raw_ball)
                 writer.writerow([name, score, ball, daraja])
         else:
             for r in rows:
-                user_id, name, score, total, analysis_text, created_at = r
+                name, score, total = r[1], r[2], r[3]
                 ball = round((score / total) * 100, 1) if total else 0.0
                 daraja = get_daraja(ball)
                 writer.writerow([name, score, ball, daraja])
 
-        # Matnni bytelarga xavfsiz o'girish
-        file_data = output.getvalue().encode('utf-8-sig')
-        mem_file = io.BytesIO(file_data)
-        mem_file.name = f"{code}_natijalar.csv"
-        mem_file.seek(0) # Faylni boshidan o'qish uchun kursor 0 ga qaytarilishi kerak
+        csv_text = output.getvalue()
+        csv_bytes = '\ufeff'.encode('utf8') + csv_text.encode('utf8')
 
         bot.send_document(
             chat_id=msg.chat.id,
-            document=mem_file,
-            visible_file_name=f"{code}_natijalar.csv",
+            document=(f"{code}_natijalar.csv", csv_bytes),
             caption=f"📊 *{code}* - test bo'yicha o'quvchilarning natijalari.",
             parse_mode="Markdown",
             reply_markup=main_menu()
         )
     except Exception as e:
-        log.error(f"Fayl yaratish yoki yuborishda xatolik: {e}")
-        safe_send(msg.chat.id, "❌ Faylni yaratishda kutilmagan xatolik yuz berdi. Bot jurnallarini (log) tekshiring.", reply_markup=main_menu())
+        log.error(f"Fayl yaratish xatosi: {e}")
+        safe_send(msg.chat.id, f"❌ Xatolik yuz berdi:\n`{str(e)}`", reply_markup=main_menu())
 
 # --- Web App Handler (Data Receiver) ---
 @bot.message_handler(content_types=["web_app_data"])
@@ -558,7 +532,6 @@ def handle_web_app(msg):
         test_type = state.get("test_type", "pdf")
         test_code = state.get("code")
 
-        # Agar MS test bo'lsa, kodni Web App ichidagi JSON dan ajratib olamiz
         try:
             data = json.loads(raw_data)
             if isinstance(data, dict) and "code" in data:
@@ -567,7 +540,7 @@ def handle_web_app(msg):
             pass
 
         if not test_code:
-            safe_send(msg.chat.id, "❌ Xatolik: Test kodi kiritilmadi! Ilova orqali kodni yozganingizga ishonch hosil qiling.", reply_markup=main_menu())
+            safe_send(msg.chat.id, "❌ Xatolik: Test kodi kiritilmadi!", reply_markup=main_menu())
             clear_state(msg.chat.id)
             return
 
@@ -585,7 +558,6 @@ def handle_web_app(msg):
             u_name = user_name[0] if user_name else str(msg.chat.id)
             notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {u_name}\n🔢 *Kod:* `{test_code}`\n📚 *Tur:* {test_type.upper()}"
             safe_send(SUPER_ADMIN, notify_msg, parse_mode="Markdown")
-
         return
 
     # 2. O'quvchi javob yuborganda
@@ -637,7 +609,6 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga tahlil chatga yuboriladi (faylga emas)
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
@@ -647,7 +618,6 @@ def handle_web_app(msg):
         )
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
 
-        # Admin xabarnomasi
         admin_msg = (
             f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
