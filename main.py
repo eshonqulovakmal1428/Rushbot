@@ -2,645 +2,164 @@ import os
 import json
 import logging
 import sqlite3
-import threading
-import math
 import csv
 import io
-from datetime import datetime, timedelta
-from contextlib import contextmanager
-
+from datetime import datetime
 import telebot
 from telebot import types
-from telebot.types import BotCommand
 from flask import Flask, request
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger(__name__)
-
 # --- Konfiguratsiya ---
-TOKEN       = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
+TOKEN = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
 SUPER_ADMIN = int(os.environ.get("ADMIN_ID", "5541008041"))
-WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://eshoonqulov-math-testbot.netlify.app/")
-RUSH_WEB_APP_URL = os.environ.get("RUSH_WEB_APP_URL", "https://lucent-medovik-bd159a.netlify.app/")
-_domain     = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-RAILWAY_URL = f"https://{_domain}" if _domain else os.environ.get("RAILWAY_URL", "")
-DB_PATH     = os.environ.get("DB_PATH", "testlar_bazasi.db")
-PORT        = int(os.environ.get("PORT", 5000))
+WEB_APP_URL = "https://eshoonqulov-math-testbot.netlify.app/"
+DB_PATH = "testlar_bazasi.db"
+PORT = int(os.environ.get("PORT", 5000))
 
+bot = telebot.TeleBot(TOKEN, threaded=True)
 app = Flask(__name__)
-bot = telebot.TeleBot(TOKEN, threaded=True, num_threads=20)
 
-# --- State Management ---
-_states_lock = threading.Lock()
-_user_states: dict = {}
-
-def get_uz_now():
-    return datetime.utcnow() + timedelta(hours=5)
-
-def get_state(chat_id):
-    with _states_lock:
-        return _user_states.get(chat_id, {})
-
-def set_state(chat_id, data):
-    with _states_lock:
-        _user_states[chat_id] = data
-
-def clear_state(chat_id):
-    with _states_lock:
-        _user_states.pop(chat_id, None)
-
-def update_state(chat_id, **kwargs):
-    with _states_lock:
-        _user_states.setdefault(chat_id, {}).update(kwargs)
-
-# --- Ma'lumotlar Bazasi (SQLite) ---
-_db_lock = threading.Lock()
-
-@contextmanager
+# --- Baza sozlari ---
 def db_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-def db_exec(query, params=()):
-    try:
-        with _db_lock, db_conn() as conn:
-            conn.execute(query, params)
-    except Exception as e:
-        log.error("DB exec xato: %s", e)
-
-def db_fetch(query, params=(), one=False):
-    try:
-        with db_conn() as conn:
-            cur = conn.execute(query, params)
-            if one:
-                row = cur.fetchone()
-                return tuple(row) if row else None
-            return [tuple(r) for r in cur.fetchall()]
-    except Exception as e:
-        log.error("DB fetch xato: %s", e)
-        return None if one else []
+    return conn
 
 def init_db():
-    db_exec("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        name    TEXT NOT NULL
-    )""")
-    db_exec("""CREATE TABLE IF NOT EXISTS tests (
-        code     TEXT PRIMARY KEY,
-        answers  TEXT,
-        deadline TEXT DEFAULT '0',
-        type     TEXT DEFAULT 'pdf',
-        link     TEXT DEFAULT ''
-    )""")
-    db_exec("""CREATE TABLE IF NOT EXISTS results (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id       INTEGER NOT NULL,
-        name          TEXT    NOT NULL,
-        code          TEXT    NOT NULL,
-        score         INTEGER NOT NULL,
-        total         INTEGER NOT NULL,
-        analysis_text TEXT,
-        created_at    TEXT DEFAULT (datetime('now','+5 hours'))
-    )""")
-    db_exec("""CREATE TABLE IF NOT EXISTS admins (
-        user_id  INTEGER PRIMARY KEY,
-        name    TEXT NOT NULL,
-        added_at TEXT DEFAULT (datetime('now','+5 hours'))
-    )""")
-    db_exec("""CREATE TABLE IF NOT EXISTS rasch_answers (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        test_code   TEXT NOT NULL,
-        answers_bin TEXT NOT NULL
-    )""")
-    log.info("Ma'lumotlar bazasi tayyor ✅")
+    with db_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS tests (code TEXT PRIMARY KEY, answers TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, code TEXT, score INTEGER, total INTEGER, analysis_text TEXT, created_at TEXT DEFAULT (datetime('now','+5 hours')))")
+        conn.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, name TEXT)")
+        conn.commit()
 
 init_db()
 
-# --- Yordamchi Funksiyalar ---
+# --- Yordamchi funksiyalar ---
 def is_admin(chat_id):
-    if int(chat_id) == SUPER_ADMIN:
-        return True
-    row = db_fetch("SELECT user_id FROM admins WHERE user_id=?", (chat_id,), one=True)
-    return row is not None
+    if int(chat_id) == SUPER_ADMIN: return True
+    with db_conn() as conn:
+        return conn.execute("SELECT 1 FROM admins WHERE user_id=?", (chat_id,)).fetchone() is not None
 
-def is_super_admin(chat_id):
-    return int(chat_id) == SUPER_ADMIN
-
-def get_admin_chat_ids():
-    ids = {SUPER_ADMIN}
-    rows = db_fetch("SELECT user_id FROM admins")
-    for r in rows:
-        ids.add(r[0])
-    return ids
-
-def progress_bar(score, total):
-    if total == 0:
-        return ""
-    pct   = score / total
-    green = int(pct * 10)
-    return "🟩" * green + "⬜" * (10 - green) + f"  {int(pct * 100)}%"
-
-def main_menu(chat_id):
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        types.KeyboardButton("📝 Test ishlash"),
-        types.KeyboardButton("📈 Rush model Test"),
-    )
-    kb.add(
-        types.KeyboardButton("📊 Natijalarim"),
-    )
-    if is_admin(chat_id):
-        kb.add(
-            types.KeyboardButton("➕ Yangi test qo'shish"),
-            types.KeyboardButton("➕ Rush test qo'shish")
-        )
-        kb.add(types.KeyboardButton("📊 Natijalarni olish"))
-    if is_super_admin(chat_id):
-        kb.add(types.KeyboardButton("👥 Adminlar boshqaruvi"))
-    return kb
-
-def back_kb():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
-    return kb
-
-def is_back(text):
-    return text == "🔙 Ortga qaytish"
-
-def safe_send(chat_id, text, **kwargs):
-    try:
-        return bot.send_message(chat_id, text, **kwargs)
-    except Exception as e:
-        log.warning("Xabar yuborishda xato (chat_id=%s): %s", chat_id, e)
-        return None
-
-def go_home(message):
-    clear_state(message.chat.id)
-    safe_send(message.chat.id, "🏠 Asosiy menyu:", reply_markup=main_menu(message.chat.id))
-
-def set_commands():
-    bot.set_my_commands([
-        BotCommand("start",     "Botni qayta ishga tushirish"),
-        BotCommand("test",      "Test ishlash"),
-        BotCommand("testlarim", "Natijalarim"),
-        BotCommand("edit",      "Ismni o'zgartirish"),
-        BotCommand("info",      "Bot haqida"),
-    ])
-
-set_commands()
-
-# --- Asosiy Buyruqlar ---
+# --- Asosiy Menyular ---
 @bot.message_handler(commands=["start"])
-def cmd_start(msg):
-    clear_state(msg.chat.id)
-    user = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
-    if user:
-        safe_send(msg.chat.id, f"👋 Salom, *{user[0]}*!",
-                  parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
-    else:
-        m = safe_send(msg.chat.id, "🎉 Xush kelibsiz!\n\n✏️ Ism va familiyangizni kiriting:")
-        if m:
-            bot.register_next_step_handler(m, _register_user)
+def start(msg):
+    bot.send_message(msg.chat.id, "Xush kelibsiz! Ism-familiyangizni kiriting:")
+    bot.register_next_step_handler(msg, register)
 
-@bot.message_handler(commands=["edit"])
-def cmd_edit(msg):
-    m = safe_send(msg.chat.id, "✏️ Yangi ism va familiyangizni kiriting:", reply_markup=back_kb())
-    if m:
-        bot.register_next_step_handler(m, _register_user)
-
-def _register_user(msg):
-    if is_back(msg.text):
-        return go_home(msg)
-    name = msg.text.strip()
-    if not name or len(name) > 100:
-        m = safe_send(msg.chat.id, "❌ Ism noto'g'ri. Qaytadan kiriting:")
-        if m:
-            bot.register_next_step_handler(m, _register_user)
-        return
-    db_exec("INSERT OR REPLACE INTO users (user_id, name) VALUES (?,?)", (msg.chat.id, name))
-    safe_send(msg.chat.id, f"✅ Saqlandi! Xush kelibsiz, *{name}*!",
-              parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
-
-@bot.message_handler(func=lambda m: m.text == "🔙 Ortga qaytish")
-def handle_back(msg):
-    go_home(msg)
-
-@bot.message_handler(commands=["testlarim"])
-@bot.message_handler(func=lambda m: m.text == "📊 Natijalarim")
-def cmd_my_results(msg):
-    rows = db_fetch(
-        "SELECT code, score, total, created_at FROM results "
-        "WHERE user_id=? ORDER BY id DESC LIMIT 25",
-        (msg.chat.id,)
-    )
-    if not rows:
-        safe_send(msg.chat.id, "❌ Siz hali hech qanday test ishlamadingiz.",
-                  reply_markup=main_menu(msg.chat.id))
-        return
-    lines = ["📊 *Sizning natijalaringiz:*\n"]
-    for i, (code, score, total, created_at) in enumerate(rows, 1):
-        bar = progress_bar(score, total)
-        lines.append(f"*{i}.* Kod: `{code}` — `{score}/{total}`\n{bar}\n_{created_at}_\n")
-    safe_send(msg.chat.id, "\n".join(lines),
-              parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
-
-# --- Rasch Logic ---
-def get_rasch_item_difficulties(code, total_q):
-    rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
-    if not rows or len(rows) < 3:
-        return [0.0] * total_q
-
-    difficulties = []
-    n_users = len(rows)
-    for i in range(total_q):
-        correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
-        p = correct_count / n_users
-        p = max(0.05, min(0.95, p))
-        b = math.log((1 - p) / p)
-        difficulties.append(b)
-    return difficulties
-
-def calculate_rasch_theta(score, b_items):
-    total_q = len(b_items)
-    if score <= 0: return -3.0
-    if score >= total_q: return 3.0
-    theta = math.log(score / (total_q - score))
-    for _ in range(10):
-        prob_sum = 0
-        info_sum = 0
-        for b in b_items:
-            try:
-                p = math.exp(theta - b) / (1 + math.exp(theta - b))
-            except OverflowError:
-                p = 1.0 if (theta - b) > 0 else 0.0
-            prob_sum += p
-            info_sum += p * (1 - p)
-        diff = prob_sum - score
-        if abs(diff) < 0.01: break
-        if info_sum > 0: theta -= diff / info_sum
-    return theta
-
-def theta_to_ball(theta):
-    """Rasch theta qiymatini 100 ballik shkalaga o'giradi (logistik egri chiziq orqali)."""
-    p = 1 / (1 + math.exp(-theta))
-    return round(p * 100, 1)
-
-def get_daraja(ball):
-    """Sertifikat darajasini aniq belgilangan oraliqlar bilan qaytaradi."""
-    if ball >= 70:
-        return "A+"
-    elif ball >= 66:
-        return "A"
-    elif ball >= 61:
-        return "B+"
-    elif ball >= 56:
-        return "B"
-    elif ball >= 51:
-        return "C+"
-    elif ball >= 46:
-        return "C"
-    else:
-        return "—"
-
-# --- Student Test Solving ---
-@bot.message_handler(commands=["test"])
-@bot.message_handler(func=lambda m: m.text in ["📝 Test ishlash", "📈 Rush model Test"])
-def cmd_student(msg):
-    user = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
-    if not user: return cmd_start(msg)
-    set_state(msg.chat.id, {"action": "student_solve", "name": user[0]})
-    m = safe_send(msg.chat.id, "🔢 Test kodini kiriting:", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _student_code_entered)
-
-def _student_code_entered(msg):
-    if is_back(msg.text): return go_home(msg)
-    code = msg.text.strip().upper()
-
-    count = db_fetch("SELECT COUNT(*) FROM results WHERE user_id=? AND code=?", (msg.chat.id, code), one=True)
-    if count and count[0] >= 1:
-        safe_send(msg.chat.id, "⚠️ Siz bu testni allaqachon ishlagansiz!\nHar bir testga faqat *1 marta* javob yuborish mumkin.", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
-        return
-
-    row = db_fetch("SELECT answers, deadline, type, link FROM tests WHERE code=?", (code,), one=True)
-    if not row:
-        m = safe_send(msg.chat.id, "❌ Bunday kod topilmadi. Qaytadan kiriting:", reply_markup=back_kb())
-        if m: bot.register_next_step_handler(m, _student_code_entered)
-        return
-
-    answers, deadline, test_type, html_link = row
-    update_state(msg.chat.id, code=code, correct=answers, type=test_type, html_link=html_link)
-
+def register(msg):
+    with db_conn() as conn:
+        conn.execute("INSERT OR REPLACE INTO users (user_id, name) VALUES (?,?)", (msg.chat.id, msg.text))
+        conn.commit()
+    
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    if test_type == "rush":
-        kb.add(types.KeyboardButton("📱 Rush Testni boshlash", web_app=types.WebAppInfo(url=f"{RUSH_WEB_APP_URL}?count={len(answers)}&v=4")))
+    kb.add("📝 Test ishlash", "📈 Rush model Test", "📊 Natijalarim")
+    if is_admin(msg.chat.id):
+        kb.add("➕ Yangi test qo'shish", "➕ Rush test qo'shish")
+        kb.add("📊 Natijalarni olish", "👥 Adminlar boshqaruvi")
+    bot.send_message(msg.chat.id, "Bosh menyu:", reply_markup=kb)
+
+# --- Test Web App qabul qilish ---
+@bot.message_handler(content_types=["web_app_data"])
+def handle_web_app(msg):
+    data = json.loads(msg.web_app_data.data)
+    
+    # Agar ma'lumotni admin test javobi sifatida yuborsa (buni WebApp'dagi payload orqali ajratasiz)
+    if data.get("is_admin_save"): 
+        code = data.get("code", "00")
+        answers = "".join(data["answers"])
+        with db_conn() as conn:
+            conn.execute("INSERT OR REPLACE INTO tests (code, answers) VALUES (?,?)", (code, answers))
+            conn.commit()
+        bot.send_message(msg.chat.id, f"✅ {code}-kodli test bazaga saqlandi!")
+        
+    # O'quvchi yechayotgan bo'lsa
     else:
-        kb.add(types.KeyboardButton("📱 Javoblarni belgilash", web_app=types.WebAppInfo(url=f"{WEB_APP_URL}?count={len(answers)}&v=4")))
-
-    kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
-    safe_send(msg.chat.id, f"✅ *Test topildi!*\n🔢 Kod: `{code}`", parse_mode="Markdown", reply_markup=kb)
-
-# --- Admin Add Tests ---
-@bot.message_handler(func=lambda m: m.text == "➕ Yangi test qo'shish")
-def admin_add_pdf(msg):
-    if not is_admin(msg.chat.id): return
-    m = safe_send(msg.chat.id, "Kod va savol sonini kiriting\n_(Misol: 701 30)_", parse_mode="Markdown", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _admin_base_code, "pdf")
-
-@bot.message_handler(func=lambda m: m.text == "➕ Rush test qo'shish")
-def admin_add_rush(msg):
-    if not is_admin(msg.chat.id): return
-    m = safe_send(msg.chat.id, "Rasch modeli asosida baholanuvchi kod va savol sonini kiriting\n_(Misol: 801 40)_", parse_mode="Markdown", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _admin_base_code, "rush")
-
-def _admin_base_code(msg, test_type):
-    if is_back(msg.text): return go_home(msg)
-    try:
-        parts = msg.text.strip().split()
-        code, count = parts[0].upper(), int(parts[1])
-        set_state(msg.chat.id, {"action": "admin_save_deadline", "code": code, "count": count, "test_type": test_type})
-        m = safe_send(msg.chat.id, "📅 Yopilish vaqtini kiriting\n_(Misol: 2026-12-31 18:00)_ yoki *0*", parse_mode="Markdown", reply_markup=back_kb())
-        if m: bot.register_next_step_handler(m, _admin_base_deadline)
-    except:
-        m = safe_send(msg.chat.id, "❌ Noto'g'ri format!", parse_mode="Markdown")
-        if m: bot.register_next_step_handler(m, _admin_base_code, test_type)
-
-def _admin_base_deadline(msg):
-    if is_back(msg.text): return go_home(msg)
-    deadline = msg.text.strip()
-    if deadline != "0":
-        try: datetime.strptime(deadline, "%Y-%m-%d %H:%M")
-        except:
-            m = safe_send(msg.chat.id, "❌ Noto'g'ri format! (YYYY-MM-DD HH:MM) yoki 0:")
-            if m: bot.register_next_step_handler(m, _admin_base_deadline)
+        student_answers = data.get("answers", [])
+        test_code = data.get("code", "00")
+        
+        with db_conn() as conn:
+            test_row = conn.execute("SELECT answers FROM tests WHERE code=?", (test_code,)).fetchone()
+            user_row = conn.execute("SELECT name FROM users WHERE user_id=?", (msg.chat.id,)).fetchone()
+            
+        if not test_row:
+            bot.send_message(msg.chat.id, "❌ Test bazada topilmadi.")
             return
+            
+        correct_answers = list(test_row[0])
+        total_questions = len(correct_answers) # Muammo yechimi: 537 emas, aniq javoblar uzunligi
+        user_name = user_row[0] if user_row else "Noma'lum o'quvchi"
+        
+        score = 0
+        analysis_list = []
+        for i in range(min(len(student_answers), total_questions)):
+            if student_answers[i].upper() == correct_answers[i].upper():
+                score += 1
+                analysis_list.append(f"{i+1}:✅")
+            else:
+                analysis_list.append(f"{i+1}:❌")
+                
+        analysis_text = ", ".join(analysis_list)
+        
+        # Natijani bazaga saqlash
+        with db_conn() as conn:
+            conn.execute("INSERT INTO results (user_id, name, code, score, total, analysis_text) VALUES (?,?,?,?,?,?)",
+                         (msg.chat.id, user_name, test_code, score, total_questions, analysis_text))
+            conn.commit()
 
-    update_state(msg.chat.id, deadline=deadline, action="admin_save")
-    state = get_state(msg.chat.id)
-    kb    = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        # O'quvchiga yo'naltiruvchi tugmalarni chiqarish
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("⬅️ Oldingi bo'lim", callback_data="prev_section"),
+            types.InlineKeyboardButton("Keyingi bo'lim ➡️", callback_data="next_section")
+        )
+        kb.add(types.InlineKeyboardButton("ℹ️ Yo'riqnoma", callback_data="help_instruction"))
+        
+        result_msg = f"📊 Test yakunlandi!\n\n👤 O'quvchi: {user_name}\n🔢 Test kodi: {test_code}"
+        bot.send_message(msg.chat.id, result_msg, reply_markup=kb)
 
-    test_type = state.get("test_type", "pdf")
-    target_url = RUSH_WEB_APP_URL if test_type == "rush" else WEB_APP_URL
-
-    kb.add(types.KeyboardButton(
-        "🛠 Javoblarni kiritish",
-        web_app=types.WebAppInfo(url=f"{target_url}?count={state['count']}&v=4")
-    ))
-    kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
-
-    t_name = "Rush (Rasch)" if test_type == "rush" else "PDF"
-    safe_send(msg.chat.id, f"✅ *Kod:* `{state['code']}` ({t_name})\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
-
-# --- Admin Get Results & Export (CSV) ---
+# --- Admin uchun CSV natijalar ---
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
 def admin_get_results(msg):
     if not is_admin(msg.chat.id): return
-    m = safe_send(msg.chat.id, "🔢 Natijalarini olmoqchi bo'lgan test kodini kiriting:", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _admin_export_results)
+    m = bot.send_message(msg.chat.id, "Natijalarini olmoqchi bo'lgan test kodini kiriting:")
+    bot.register_next_step_handler(m, process_csv_export)
 
-def _admin_export_results(msg):
-    if is_back(msg.text): return go_home(msg)
+def process_csv_export(msg):
     code = msg.text.strip().upper()
-
-    test_info = db_fetch("SELECT type, answers FROM tests WHERE code=?", (code,), one=True)
-    if not test_info:
-        safe_send(msg.chat.id, "❌ Bu kod bo'yicha test topilmadi.", reply_markup=main_menu(msg.chat.id))
-        return
-
-    test_type, correct_answers = test_info
-    total_q = len(correct_answers)
-
-    rows = db_fetch("SELECT user_id, name, score, total, created_at FROM results WHERE code=? ORDER BY score DESC, created_at ASC", (code,))
-
+    with db_conn() as conn:
+        rows = conn.execute("SELECT name, score, total, analysis_text, created_at FROM results WHERE code=? ORDER BY score DESC", (code,)).fetchall()
+        
     if not rows:
-        safe_send(msg.chat.id, "❌ Bu test bo'yicha hech qanday natija topilmadi.", reply_markup=main_menu(msg.chat.id))
+        bot.send_message(msg.chat.id, "Bu test kodi bo'yicha natijalar yo'q.")
         return
-
+        
+    # Excel mukammal o'qishi uchun maxsus oqim va BOM yozish
     output = io.StringIO()
-    writer = csv.writer(output)
+    output.write('\ufeff') 
     
-    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
-
-    if test_type == "rush":
-        b_items = get_rasch_item_difficulties(code, total_q)
-        for r in rows:
-            user_id, name, score, total, created_at = r
-            theta = calculate_rasch_theta(score, b_items)
-            ball = theta_to_ball(theta)
-            daraja = get_daraja(ball)
-            writer.writerow([name, score, ball, daraja])
-    else:
-        for r in rows:
-            user_id, name, score, total, created_at = r
-            ball = round((score / total) * 100, 1) if total else 0.0
-            daraja = get_daraja(ball)
-            writer.writerow([name, score, ball, daraja])
-
-    mem_file = io.BytesIO(output.getvalue().encode('utf-8-sig'))
-    mem_file.name = f"{code}_natijalar.csv"
-
+    # Vergul o'rniga nuqtali-vergul (;) ustunlar to'g'ri taqsimlanishi uchun muhim
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(["T/R", "O'quvchi Ismi", "Test Kodi", "To'g'ri Javoblar", "Jami Savollar", "Batafsil Tahlil (To'g'ri/Xato)", "Sana"])
+    
+    for i, row in enumerate(rows, 1):
+        writer.writerow([i, row[0], code, row[1], row[2], row[3], row[4]])
+        
+    output.seek(0)
+    file_data = io.BytesIO(output.getvalue().encode('utf-8'))
+    file_data.name = f"{code}_natijalar.csv"
+    
     bot.send_document(
-        msg.chat.id,
-        mem_file,
-        caption=f"📊 *{code}* - test bo'yicha o'quvchilarning natijalari.",
-        parse_mode="Markdown",
-        reply_markup=main_menu(msg.chat.id)
+        msg.chat.id, 
+        types.InputFile(file_data), 
+        caption=f"📊 {code} - test bo'yicha o'quvchilarning natijalari va batafsil tahlili."
     )
 
-# --- Web App Handler (Data Receiver) ---
-@bot.message_handler(content_types=["web_app_data"])
-def handle_web_app(msg):
-    raw_data = msg.web_app_data.data.strip()
-    state = get_state(msg.chat.id)
-
-    # 1. Admin javob kalitini kiritganda
-    if state.get("action") == "admin_save":
-        test_type = state.get("test_type", "pdf")
-
-        answers_str = raw_data.lower()
-        try:
-            data = json.loads(raw_data)
-            if isinstance(data, list):
-                answers_str = "".join(data).lower()
-            elif isinstance(data, dict) and "answers" in data:
-                answers_str = "".join(data["answers"]).lower()
-        except:
-            pass
-
-        db_exec("INSERT OR REPLACE INTO tests (code, answers, deadline, type, link) VALUES (?,?,?,?,?)",
-                (state["code"], answers_str, state.get("deadline", "0"), test_type, ""))
-        clear_state(msg.chat.id)
-        safe_send(msg.chat.id, f"✅ {test_type.upper()} testi bazaga muvaffaqiyatli saqlandi!", reply_markup=main_menu(msg.chat.id))
-        return
-
-    # 2. O'quvchi javob yuborganda
-    if state.get("action") == "student_solve":
-        user_name = state.get("name")
-        code = state.get("code")
-        correct_answers = state.get("correct", "").lower()
-        test_type = state.get("type", "pdf")
-        total_q = len(correct_answers)
-
-        user_answers = raw_data.lower()
-        try:
-            data = json.loads(raw_data)
-            if isinstance(data, list):
-                user_answers = "".join(data).lower()
-            elif isinstance(data, dict) and "answers" in data:
-                user_answers = "".join(data["answers"]).lower()
-        except:
-            pass
-
-        user_answers = user_answers[:total_q].ljust(total_q, ' ')
-
-        score = 0
-        analysis_text = ""
-        ans_bin = ""
-
-        # Natijalarni tahlil qilish (Adminga yuborish uchun)
-        for i in range(total_q):
-            u_a = user_answers[i]
-            c_a = correct_answers[i]
-            
-            if u_a == c_a:
-                score += 1
-                ans_bin += "1"
-                analysis_text += f"{i+1}.✅  "
-            else:
-                ans_bin += "0"
-                analysis_text += f"{i+1}.❌({c_a.upper()})  "
-
-            if (i + 1) % 5 == 0:
-                analysis_text += "\n"
-
-        db_exec("INSERT INTO results (user_id, name, code, score, total, analysis_text) VALUES (?,?,?,?,?,?)",
-                (msg.chat.id, user_name, code, score, total_q, analysis_text))
-
-        if test_type == "rush":
-            db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
-
-        clear_state(msg.chat.id)
-
-        # O'quvchiga faqat natija va yo'naltiruvchi tugmalar chiqadi (Batafsil tahlil olib tashlandi)
-        result_msg = (
-            f"📊 *Test yakunlandi!*\n\n"
-            f"👤 *O'quvchi:* {user_name}\n"
-            f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdingiz."
-        )
-        
-        # Yo'naltiruvchi (Guidance) tugmalar
-        guidance_kb = types.InlineKeyboardMarkup(row_width=2)
-        guidance_kb.add(
-            types.InlineKeyboardButton("⬅️ Oldingi bo'lim", callback_data="guide_prev"),
-            types.InlineKeyboardButton("Keyingi bo'lim ➡️", callback_data="guide_next")
-        )
-        guidance_kb.add(types.InlineKeyboardButton("ℹ️ Yo'riqnoma", callback_data="guide_help"))
-
-        safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=guidance_kb)
-        
-        # O'quvchini asosiy menyuga qaytarish
-        safe_send(msg.chat.id, "Bosh menyu:", reply_markup=main_menu(msg.chat.id))
-
-        # Adminga esa to'liq tahlil yuboriladi
-        admin_msg = (
-            f"📥 *Yangi natija keldi!*\n\n"
-            f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
-            f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q}\n\n"
-            f"📝 *Batafsil tahlil:*\n{analysis_text}"
-        )
-        for admin_id in get_admin_chat_ids():
-            safe_send(admin_id, admin_msg, parse_mode="Markdown")
-
-        return
-
-    safe_send(msg.chat.id, "✅ Ma'lumot qabul qilindi.", reply_markup=main_menu(msg.chat.id))
-
-# --- Yo'naltiruvchi tugmalar uchun callback ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith("guide_"))
-def handle_guidance(call):
-    if call.data == "guide_prev":
-        bot.answer_callback_query(call.id, "⬅️ Oldingi mavzularni takrorlash bo'yicha ko'rsatma...", show_alert=True)
-    elif call.data == "guide_next":
-        bot.answer_callback_query(call.id, "Keyingi mavzularga o'tish uchun tayyorsiz! ➡️", show_alert=True)
-    elif call.data == "guide_help":
-        bot.answer_callback_query(call.id, "ℹ️ Natijani yaxshilash yoki xatolar ustida ishlash uchun ustozga murojaat qiling.", show_alert=True)
-
-# --- Super Admin Management ---
-@bot.message_handler(func=lambda m: m.text == "👥 Adminlar boshqaruvi")
-def super_admin_menu(msg):
-    if not is_super_admin(msg.chat.id): return
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("➕ Admin qo'shish", "➖ Admin o'chirish")
-    kb.add("📋 Adminlar ro'yxati", "🔙 Ortga qaytish")
-    safe_send(msg.chat.id, "🛠 Boshqaruv menyusidan tanlang:", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text == "📋 Adminlar ro'yxati")
-def list_admins(msg):
-    if not is_super_admin(msg.chat.id): return
-    rows = db_fetch("SELECT user_id, name, added_at FROM admins")
-    if not rows:
-        safe_send(msg.chat.id, "📭 Hozircha sizdan boshqa admin yo'q.")
-        return
-    text = "📋 *Joriy Adminlar ro'yxati:*\n\n"
-    for r in rows:
-        text += f"👤 *Ism:* {r[1]}\n🆔 *ID:* `{r[0]}`\n📅 *Qo'shilgan:* {r[2]}\n\n"
-    safe_send(msg.chat.id, text, parse_mode="Markdown")
-
-@bot.message_handler(func=lambda m: m.text == "➕ Admin qo'shish")
-def add_admin_start(msg):
-    if not is_super_admin(msg.chat.id): return
-    m = safe_send(msg.chat.id, "Yangi adminning *Telegram ID* raqamini va *Ismini* kiriting.\n\n_Format: ID Ism (Masalan: 123456789 Ali)_", parse_mode="Markdown", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _add_admin_finish)
-
-def _add_admin_finish(msg):
-    if is_back(msg.text): return go_home(msg)
-    try:
-        parts = msg.text.strip().split(maxsplit=1)
-        user_id = int(parts[0])
-        name = parts[1] if len(parts) > 1 else "Admin"
-        db_exec("INSERT OR REPLACE INTO admins (user_id, name) VALUES (?,?)", (user_id, name))
-        safe_send(msg.chat.id, f"✅ Admin muvaffaqiyatli qo'shildi:\nID: {user_id}\nIsm: {name}", reply_markup=main_menu(msg.chat.id))
-    except:
-        m = safe_send(msg.chat.id, "❌ Xato format. Iltimos qaytadan urining (Format: 123456789 Ism):")
-        if m: bot.register_next_step_handler(m, _add_admin_finish)
-
-@bot.message_handler(func=lambda m: m.text == "➖ Admin o'chirish")
-def remove_admin_start(msg):
-    if not is_super_admin(msg.chat.id): return
-    m = safe_send(msg.chat.id, "O'chirmoqchi bo'lgan adminning *Telegram ID* raqamini kiriting:", parse_mode="Markdown", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _remove_admin_finish)
-
-def _remove_admin_finish(msg):
-    if is_back(msg.text): return go_home(msg)
-    try:
-        user_id = int(msg.text.strip())
-        db_exec("DELETE FROM admins WHERE user_id=?", (user_id,))
-        safe_send(msg.chat.id, f"🗑 Admin (ID: {user_id}) muvaffaqiyatli o'chirildi.", reply_markup=main_menu(msg.chat.id))
-    except:
-        m = safe_send(msg.chat.id, "❌ Faqat raqamdan iborat ID kiriting:")
-        if m: bot.register_next_step_handler(m, _remove_admin_finish)
-
-# --- Flask Server ---
+# --- Server ishga tushishi ---
 @app.route(f"/{TOKEN}", methods=["POST"])
-def telegram_webhook():
-    update = telebot.types.Update.de_json(request.get_data(as_text=True))
-    bot.process_new_updates([update])
+def webhook():
+    bot.process_new_updates([telebot.types.Update.de_json(request.get_data(as_text=True))])
     return "", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=PORT)
