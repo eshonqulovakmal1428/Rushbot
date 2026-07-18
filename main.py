@@ -110,7 +110,6 @@ def init_db():
         link       TEXT DEFAULT '',
         created_at TEXT DEFAULT (datetime('now','+5 hours'))
     )""")
-    # Yangi tuzilmani eski DB bilan moslashtirish uchun:
     try: db_exec("ALTER TABLE tests ADD COLUMN creator_id INTEGER DEFAULT 0")
     except: pass
     try: db_exec("ALTER TABLE tests ADD COLUMN created_at TEXT DEFAULT (datetime('now','+5 hours'))")
@@ -135,7 +134,7 @@ def init_db():
 
 init_db()
 
-# --- Avtomatik tozalash funksiyasi (1 haftalik muddat) ---
+# --- Avtomatik tozalash funksiyasi ---
 def clean_old_data():
     try:
         db_exec("DELETE FROM tests WHERE created_at <= datetime('now', '-7 days', '+5 hours')")
@@ -214,7 +213,6 @@ def cq_check_sub(call):
     if is_subscribed(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ Rahmat! A'zo bo'ldingiz.", show_alert=True)
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        # Boshlang'ich jarayonni chaqirish
         m = types.Message(message_id=0, from_user=call.from_user, date=0, chat=call.message.chat, content_type='text', options={}, json_string="")
         cmd_start(m)
     else:
@@ -234,7 +232,12 @@ def extract_answers_list(raw_data):
                 elif isinstance(ans, dict):
                     return [str(v).strip().lower() for k, v in sorted(ans.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
             else:
-                return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
+                # Agar test kod ham, javoblar ham bir obyekt ichida (dict) kelsa
+                ans_items = {k: v for k, v in data.items() if str(k).isdigit()}
+                if ans_items:
+                    return [str(v).strip().lower() for k, v in sorted(ans_items.items(), key=lambda item: int(item[0]))]
+                else:
+                    return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0])) if k != "code"]
         return [str(data).strip().lower()]
     except Exception:
         text = raw_data.strip().lower()
@@ -247,10 +250,9 @@ def extract_answers_list(raw_data):
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
-    clean_old_data() # Kesh tozalash
+    clean_old_data() 
     clear_state(msg.chat.id)
     
-    # Har kirganda ism familiya so'raladi
     m = safe_send(msg.chat.id, "🎉 Xush kelibsiz!\n\n✏️ To'liq ism va familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
     if m:
         bot.register_next_step_handler(m, _register_user)
@@ -317,9 +319,9 @@ def calculate_rasch_theta(score, b_items):
                 p = 1.0 if (theta - b) > 0 else 0.0
             prob_sum += p
             info_sum += p * (1 - p)
-        diff = prob_sum - score
-        if abs(diff) < 0.01: break
-        if info_sum > 0: theta -= diff / info_sum
+            diff = prob_sum - score
+            if abs(diff) < 0.01: break
+            if info_sum > 0: theta -= diff / info_sum
     return theta
 
 def theta_to_ball(theta):
@@ -343,6 +345,7 @@ def cmd_student(msg):
     if not user: return cmd_start(msg)
     
     set_state(msg.chat.id, {"action": "student_solve", "name": user[0]})
+    # Test kodini student so'rashi kerak, chunki kod to'g'riligini tekshirmasdan Belgilash ochilmaydi
     m = safe_send(msg.chat.id, "🔢 Test kodini kiriting:", reply_markup=back_kb())
     if m: bot.register_next_step_handler(m, _student_code_entered)
 
@@ -400,28 +403,14 @@ def _user_base_code_pdf(msg):
         m = safe_send(msg.chat.id, "❌ Noto'g'ri format! Iltimos, qaytadan kiriting:", parse_mode="Markdown")
         if m: bot.register_next_step_handler(m, _user_base_code_pdf)
 
-
 @bot.message_handler(func=lambda m: m.text == "➕ MS test yaratish")
 def user_add_rush(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
     clean_old_data()
-    m = safe_send(msg.chat.id, "MS testi kodini, shuningdek ketma-ket nechta *ochiq* va nechta *yopiq* savol borligini kiriting\n_(Misol: 801 10 20 - bu yerda 10 ta ochiq va 20 ta yopiq savol)_", parse_mode="Markdown", reply_markup=back_kb())
-    if m: bot.register_next_step_handler(m, _user_base_code_ms)
-
-def _user_base_code_ms(msg):
-    if is_back(msg.text): return go_home(msg)
-    try:
-        parts = msg.text.strip().split()
-        code = parts[0].upper()
-        open_q = int(parts[1])
-        closed_q = int(parts[2])
-        count = open_q + closed_q
-        set_state(msg.chat.id, {"action": "admin_save_deadline", "code": code, "count": count, "open": open_q, "closed": closed_q, "test_type": "rush"})
-        m = safe_send(msg.chat.id, "📅 Yopilish vaqtini kiriting\n_(Misol: 2026-12-31 18:00)_ yoki *0*", parse_mode="Markdown", reply_markup=back_kb())
-        if m: bot.register_next_step_handler(m, _user_base_deadline)
-    except:
-        m = safe_send(msg.chat.id, "❌ Noto'g'ri format! Kod Ochiq Yopiq ko'rinishida yozing\n_(Misol: 801 10 20)_:", parse_mode="Markdown")
-        if m: bot.register_next_step_handler(m, _user_base_code_ms)
+    # MS test uchun test kodini va sonlarni so'rash o'tkazib yuboriladi, count standart 55.
+    set_state(msg.chat.id, {"action": "admin_save_deadline", "count": 55, "test_type": "rush"})
+    m = safe_send(msg.chat.id, "📅 Yopilish vaqtini kiriting\n_(Misol: 2026-12-31 18:00)_ yoki *0*", parse_mode="Markdown", reply_markup=back_kb())
+    if m: bot.register_next_step_handler(m, _user_base_deadline)
 
 def _user_base_deadline(msg):
     if is_back(msg.text): return go_home(msg)
@@ -441,19 +430,23 @@ def _user_base_deadline(msg):
     target_url = RUSH_WEB_APP_URL if test_type == "rush" else WEB_APP_URL
 
     if test_type == "rush":
-        # HTML faylda qolgan maydonlarni yashirish uchun open va closed parametrlari beriladi
-        url_with_params = f"{target_url}?count={state['count']}&open={state.get('open', 0)}&closed={state.get('closed', 0)}&v=5"
+        # MS test uchun ortiqcha parametrlar yo'q
+        url_with_params = f"{target_url}?count=55&v=5"
+        kb.add(types.KeyboardButton(
+            "🛠 Javoblarni kiritish",
+            web_app=types.WebAppInfo(url=url_with_params)
+        ))
+        kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
+        safe_send(msg.chat.id, f"✅ *Tayyor!*\n📅 *Muddat:* {deadline}\n\nTugmani bosib ilovada **test kodini** va to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
     else:
+        # Odatiy test
         url_with_params = f"{target_url}?count={state['count']}&v=5"
-
-    kb.add(types.KeyboardButton(
-        "🛠 Javoblarni kiritish",
-        web_app=types.WebAppInfo(url=url_with_params)
-    ))
-    kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
-
-    t_name = "MS Test" if test_type == "rush" else "Odatiy"
-    safe_send(msg.chat.id, f"✅ *Kod:* `{state['code']}` ({t_name})\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
+        kb.add(types.KeyboardButton(
+            "🛠 Javoblarni kiritish",
+            web_app=types.WebAppInfo(url=url_with_params)
+        ))
+        kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
+        safe_send(msg.chat.id, f"✅ *Kod:* `{state.get('code', '')}` (Odatiy)\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
 
 # --- Get Results & Export (Barchaga, faqat o'zi yaratgan test bo'yicha) ---
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
@@ -473,7 +466,6 @@ def _user_export_results(msg):
 
     test_type, answers_raw, creator_id = test_info
     
-    # Faqat testni o'zi yaratganlar yoki Super Admin natijalarni yuklay oladi
     if msg.chat.id != creator_id and msg.chat.id != SUPER_ADMIN:
         safe_send(msg.chat.id, "❌ Ushbu test natijalarini faqat uni yaratgan odam yuklab ololadi.", reply_markup=main_menu())
         return
@@ -534,20 +526,34 @@ def handle_web_app(msg):
     if state.get("action") == "admin_save":
         test_type = state.get("test_type", "pdf")
         
+        test_code = state.get("code")
+
+        # MS test bo'lganda test kodini Web App yuborgan ma'lumotdan ajratib olamiz
+        try:
+            data = json.loads(raw_data)
+            if isinstance(data, dict) and "code" in data:
+                test_code = str(data["code"]).strip().upper()
+        except:
+            pass
+
+        if not test_code:
+            safe_send(msg.chat.id, "❌ Xatolik: Test kodi kiritilmadi! Ilova orqali kodni yozganingizga ishonch hosil qiling.", reply_markup=main_menu())
+            clear_state(msg.chat.id)
+            return
+
         answers_list = extract_answers_list(raw_data)
         answers_json_str = json.dumps(answers_list)
 
         db_exec("INSERT OR REPLACE INTO tests (code, creator_id, answers, deadline, type, link) VALUES (?,?,?,?,?,?)",
-                (state["code"], msg.chat.id, answers_json_str, state.get("deadline", "0"), test_type, ""))
+                (test_code, msg.chat.id, answers_json_str, state.get("deadline", "0"), test_type, ""))
         clear_state(msg.chat.id)
         
-        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saqlandi!", reply_markup=main_menu())
+        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saqlandi!\n🔢 Kod: `{test_code}`", parse_mode="Markdown", reply_markup=main_menu())
         
-        # Bosh adminga bildirishnoma (Global nazorat)
         if msg.chat.id != SUPER_ADMIN:
             user_name = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
             u_name = user_name[0] if user_name else str(msg.chat.id)
-            notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {u_name}\n🔢 *Kod:* `{state['code']}`\n📚 *Tur:* {test_type.upper()}"
+            notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {u_name}\n🔢 *Kod:* `{test_code}`\n📚 *Tur:* {test_type.upper()}"
             safe_send(SUPER_ADMIN, notify_msg, parse_mode="Markdown")
 
         return
@@ -601,7 +607,6 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga natija
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
@@ -611,7 +616,6 @@ def handle_web_app(msg):
         )
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
 
-        # Bosh Adminga natija to'g'risida xabarnoma (Sizga)
         admin_msg = (
             f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
