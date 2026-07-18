@@ -423,31 +423,35 @@ def _admin_export_results(msg):
     test_type, correct_answers = test_info
     total_q = len(correct_answers)
 
-    rows = db_fetch("SELECT user_id, name, score, total, created_at FROM results WHERE code=? ORDER BY score DESC, created_at ASC", (code,))
+    # Natijalarni olishda batafsil tahlilni ham qo'shamiz (analysis_text)
+    rows = db_fetch("SELECT user_id, name, score, total, analysis_text, created_at FROM results WHERE code=? ORDER BY score DESC, created_at ASC", (code,))
 
     if not rows:
         safe_send(msg.chat.id, "❌ Bu test bo'yicha hech qanday natija topilmadi.", reply_markup=main_menu(msg.chat.id))
         return
 
     output = io.StringIO()
-    writer = csv.writer(output)
+    output.write('\ufeff') # Excelda ustunlar yozuvi mos tushishi va muammosiz o'qilishi uchun BOM qo'shildi
     
-    writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
+    # delimiter sifatida ';' ishlatiladi. Excel buni alohida ustun qilib kesadi
+    writer = csv.writer(output, delimiter=';')
+    
+    writer.writerow(["T/R", "Ism va Familiya", "Test Kodi", "To'g'ri javob soni", "Jami Savollar", "Olgan bali", "Daraja", "Batafsil Tahlil (To'g'ri/Xato)"])
 
     if test_type == "rush":
         b_items = get_rasch_item_difficulties(code, total_q)
-        for r in rows:
-            user_id, name, score, total, created_at = r
+        for i, r in enumerate(rows, 1):
+            user_id, name, score, total, analysis_text, created_at = r
             theta = calculate_rasch_theta(score, b_items)
             ball = theta_to_ball(theta)
             daraja = get_daraja(ball)
-            writer.writerow([name, score, ball, daraja])
+            writer.writerow([i, name, code, score, total, ball, daraja, analysis_text])
     else:
-        for r in rows:
-            user_id, name, score, total, created_at = r
+        for i, r in enumerate(rows, 1):
+            user_id, name, score, total, analysis_text, created_at = r
             ball = round((score / total) * 100, 1) if total else 0.0
             daraja = get_daraja(ball)
-            writer.writerow([name, score, ball, daraja])
+            writer.writerow([i, name, code, score, total, ball, daraja, analysis_text])
 
     mem_file = io.BytesIO(output.getvalue().encode('utf-8-sig'))
     mem_file.name = f"{code}_natijalar.csv"
@@ -455,7 +459,7 @@ def _admin_export_results(msg):
     bot.send_document(
         msg.chat.id,
         mem_file,
-        caption=f"📊 *{code}* - test bo'yicha o'quvchilarning natijalari.",
+        caption=f"📊 *{code}* - test bo'yicha o'quvchilarning natijalari va batafsil tahlili.",
         parse_mode="Markdown",
         reply_markup=main_menu(msg.chat.id)
     )
@@ -530,18 +534,4 @@ def handle_web_app(msg):
                 (msg.chat.id, user_name, code, score, total_q, analysis_text))
 
         if test_type == "rush":
-            db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
-
-        clear_state(msg.chat.id)
-
-        # O'quvchiga faqat natija va yo'naltiruvchi tugmalar chiqadi (Batafsil tahlil olib tashlandi)
-        result_msg = (
-            f"📊 *Test yakunlandi!*\n\n"
-            f"👤 *O'quvchi:* {user_name}\n"
-            f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdingiz."
-        )
-        
-        # Yo'naltiruvchi (Guidance) tugmalar
-        guidance_kb = types.InlineKeyboardMarkup(row_width=2)
-        g
+            db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code,
