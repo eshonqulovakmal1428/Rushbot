@@ -319,82 +319,93 @@ def cmd_info(msg):
     )
     safe_send(msg.chat.id, text, parse_mode="Markdown")
 
-# --- YANGI REJADAGI GIBRID-RASCH LOGIKASI ---
+# =========================================================
+# --- YAKUNIY: GIBRID-RASCH (SOF RASCH + KESISH QOIDASI) ---
+# =========================================================
 
 def recalculate_ms_item_weights(code, total_q=55):
     """
-    Kanal a'zolari ko'paygani sari, o'quvchilar xatolarini tahlil qilib, 
-    savollarning dynamic qiyinchilik vaznini qayta belgilaydi.
-    Faqat fayl yuklanayotganda ishlaydi.
+    Sof Rasch modeli: Hatto 1 kishi ishlagan bo'lsa ham, savollarning real
+    topilish foiziga (p) qarab og'irlikni dinamik hisoblaydi.
+    Limiter qat'iy ishlagani uchun, 1 kishining bali sakrab ketmaydi.
+    Faqat fayl yuklanayotganda ishlaydi!
     """
     rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
-    
-    # Agar ma'lumot yetarli bo'lmasa, static osondan qiyinga taqsimot qaytariladi
-    if not rows or len(rows) < 2:
-        weights = []
-        for i in range(total_q):
-            if i < 20: weights.append(1.7)
-            elif i < 40: weights.append(2.0)
-            else: weights.append(3.1)
-        return weights
-
     n_users = len(rows)
+    
+    # Agar hali hech kim ishlamagan bo'lsa (fayl bo'sh bo'lsa), hamma savolga teng ball.
+    if n_users == 0:
+        return [round(120.0 / total_q, 2)] * total_q
+
     pass_rates = []
     
+    # Har bir savol uchun topilish foizini (pass rate) hisoblash
     for i in range(total_q):
         correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
         p = correct_count / n_users
-        p = max(0.05, min(0.95, p)) # Overflow cheklovi
+        
+        # Matematik xato bermasligi uchun 100% ni 95% ga, 0% ni 5% ga cheklaymiz
+        p = max(0.05, min(0.95, p)) 
         pass_rates.append(p)
         
+    # Logitlar (Qiyinchilik indeksi: b = ln((1-p)/p))
     logits = [math.log((1 - p) / p) for p in pass_rates]
     min_l, max_l = min(logits), max(logits)
     
+    # Logitlarni (1.5 - 3.5 ball) oralig'iga transformatsiya qilish
     raw_weights = []
     for l in logits:
         if max_l == min_l:
-            w = 2.0
+            w = 2.0  # Hamma bir xil yechgan bo'lsa (yoki faqat 1 kishi ishlagan bo'lsa)
         else:
-            # Qiyin savol -> 3.5 ballgacha, Oson savol -> 1.5 ballgacha dynamic cho'ziladi
             w = 1.5 + ((l - min_l) / (max_l - min_l)) * (3.5 - 1.5)
         raw_weights.append(w)
         
-    # Guruh yig'indisini 120 ball atrofida ushlab turamiz (Qiyin javob yechganni ko'tarish uchun)
+    # Umumiy bazaviy og'irlikni saqlab qolamiz (Summa ~ 120 ball, sakrash uchun joy qoldiradi)
     current_sum = sum(raw_weights)
     target_sum = 120.0
     final_weights = [round((w * target_sum) / current_sum, 2) for w in raw_weights]
     
     return final_weights
 
+
 def calculate_ms_final_score(user_answers_bin, item_weights):
     """
-    O'quvchi to'plagan dynamic ballni siz bergan qat'iy to'g'ri soni chegaralari bo'yicha kesadi.
-    Faqat fayl yuklanayotganda ishlaydi.
+    O'quvchi to'plagan xom ballni (raw_ball), siz kiritgan To'g'ri Soni (Limit) asosida
+    kesadi (Shift) yoki yetmay qolsa daraja minimumiga ko'taradi (Pol).
     """
     togri_soni = user_answers_bin.count('1')
     raw_ball = 0.0
     
-    # Faqat mos kelgan og'irliklardan foydalanish
     min_len = min(len(user_answers_bin), len(item_weights))
     
+    # 1. Qaysi savolni topganiga qarab dinamik xom ballni yig'ish
     for i in range(min_len):
         if user_answers_bin[i] == '1':
             raw_ball += item_weights[i]
             
-    # SIZ BELGILAGAN QAT'IY SHIFT (CEILING LIMITER) QOIDASI
-    if togri_soni >= 42:   max_ruxsat_ball = 100.0   # A+ minimal 42 ta
-    elif togri_soni >= 36: max_ruxsat_ball = 69.9    # A minimal 36 ta
-    elif togri_soni >= 30: max_ruxsat_ball = 64.9    # B+ minimal 30 ta
-    elif togri_soni >= 26: max_ruxsat_ball = 59.9    # B minimal 26 ta
-    elif togri_soni >= 21: max_ruxsat_ball = 54.9    # C+ minimal 21 ta
-    elif togri_soni >= 15: max_ruxsat_ball = 49.9    # C minimal 15 ta
-    else:                  max_ruxsat_ball = 45.9    # Daraja berilmaydi hududi
+    # 2. QAT'IY KAFOLAT (MIN) VA SHIFT (MAX) QOIDALARI
+    if togri_soni >= 42:
+        min_ball, max_ball = 70.0, 100.0   # A+ uchun ochiq zona
+    elif togri_soni >= 36:
+        min_ball, max_ball = 65.0, 69.9    # A uchun zona
+    elif togri_soni >= 30:
+        min_ball, max_ball = 60.0, 64.9    # B+ uchun zona
+    elif togri_soni >= 26:
+        min_ball, max_ball = 55.0, 59.9    # B uchun zona
+    elif togri_soni >= 21:
+        min_ball, max_ball = 50.0, 54.9    # C+ uchun zona
+    elif togri_soni >= 15:
+        min_ball, max_ball = 46.0, 49.9    # C uchun zona
+    else:
+        min_ball, max_ball = 0.0,  45.9    # Yiqilganlar zonasi (Max 45.9)
 
-    # Avtomatik tushirish (kesuvchi qaychi)
-    yakuniy_ball = min(raw_ball, max_ruxsat_ball)
-    yakuniy_ball = round(max(0.0, yakuniy_ball), 1)
+    # 3. KESISH VA KO'TARISH (Limitlar orasiga tushirish)
+    yakuniy_ball = max(raw_ball, min_ball)     # Pastdan ko'tarish
+    yakuniy_ball = min(yakuniy_ball, max_ball) # Tepadan kesish
+    yakuniy_ball = round(yakuniy_ball, 1)
     
-    # Yakuniy ball asosida DTM sertifikat darajasini belgilash
+    # 4. Yakuniy ball qaysi oraliqda qotganiga qarab yakuniy daraja berish
     if togri_soni < 15 or yakuniy_ball < 46.0:
         daraja = "—"
     elif 46.0 <= yakuniy_ball < 50.0:   daraja = "C"
@@ -405,6 +416,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
     else:                               daraja = "A+"
         
     return yakuniy_ball, daraja
+
 
 def get_daraja(ball):
     if ball >= 70: return "A+"
@@ -517,7 +529,7 @@ def _user_base_deadline(msg):
         kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
         safe_send(msg.chat.id, f"✅ *Kod:* `{state.get('code', '')}` (Odatiy)\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
 
-# --- Get Results & Export ---
+# --- GET RESULTS & EXPORT (Reyting o'rni bilan) ---
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
 def user_get_results(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
@@ -553,40 +565,55 @@ def _user_export_results(msg):
 
     try:
         output = io.StringIO()
+        # delimiter=';' excelda qatorlarning tartibli bo'linib chiqishini ta'minlaydi
         writer = csv.writer(output, delimiter=';')
-        writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
 
         if test_type == "rush":
-            # 1. Barcha o'quvchilar sonidan kelib chiqib Eng to'g'ri yangilangan og'irlikni hisoblab olamiz
+            # 1. Barcha abituriyentlar sonidan eng so'nggi aniq qiyinchilikni hisoblash
             item_weights = recalculate_ms_item_weights(code, total_q)
+            evaluated_students = []
             
-            # 2. Barcha o'quvchilarni ushbu adolatli tarozida qayta o'lchab faylga yozamiz
+            # 2. Barchani qayta taroziga qoyamiz
             for r in rows:
                 name, score, analysis_text = r[1], r[2], r[4]
-                # Tahlil tekstidan (✅ va ❌) 10100 ko'rinishidagi javoblar bazasini qayta tiklaymiz
                 ans_bin = extract_bin_from_analysis(analysis_text)
                 
-                # Agar biror sabab bilan tiklab bo'lmasa, sun'iy javob generatsiya qilamiz
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * score + "0" * (total_q - score)
                 
-                # Yangilangan vazn va qat'iy chegaralarga ko'ra baholash
                 ball, daraja = calculate_ms_final_score(ans_bin, item_weights)
-                writer.writerow([name, score, ball, daraja])
+                evaluated_students.append({
+                    "name": name,
+                    "score": score,
+                    "ball": ball,
+                    "daraja": daraja
+                })
+                
+            # 3. O'quvchilarni yangi, haqqoniy MS Bali bo'yicha tartiblaymiz (Reyting)
+            evaluated_students.sort(key=lambda x: (x["ball"], x["score"]), reverse=True)
+            
+            # 4. Sarlavha
+            writer.writerow(["O'rni", "Ism va Familiya", "To'g'ri javob soni", "Yakuniy MS Ball", "Sertifikat Darajasi"])
+            
+            for idx, st in enumerate(evaluated_students, 1):
+                writer.writerow([f"{idx}-o'rin", st["name"], st["score"], st["ball"], st["daraja"]])
+                
         else:
-            for r in rows:
+            writer.writerow(["O'rni", "Ism va Familiya", "To'g'ri javob soni", "Foiz (%)", "Daraja"])
+            for idx, r in enumerate(rows, 1):
                 name, score, total = r[1], r[2], r[3]
                 ball = round((score / total) * 100, 1) if total else 0.0
                 daraja = get_daraja(ball)
-                writer.writerow([name, score, ball, daraja])
+                writer.writerow([f"{idx}-o'rin", name, score, f"{ball}%", daraja])
 
         csv_text = output.getvalue()
+        # '\ufeff' (BOM) orqali Excel'da O'zbek harflari ieroglif bo'lib ketmasligini ta'minlaymiz
         csv_bytes = '\ufeff'.encode('utf8') + csv_text.encode('utf8')
 
         bot.send_document(
             chat_id=msg.chat.id,
-            document=(f"{code}_natijalar.csv", csv_bytes),
-            caption=f"📊 *{code}* - test bo'yicha eng so'nggi o'zgarishlar asosida hisoblangan aniq natijalar.",
+            document=(f"{code}_Natijalar.csv", csv_bytes),
+            caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar xatoliklarni tahlil qilish asosida qayta o'lchandi._",
             parse_mode="Markdown",
             reply_markup=main_menu()
         )
@@ -678,12 +705,9 @@ def handle_web_app(msg):
         db_exec("INSERT INTO results (user_id, name, code, score, total, analysis_text) VALUES (?,?,?,?,?,?)",
                 (msg.chat.id, user_name, code, score, total_q, analysis_text))
 
-        # Test turiga qarab Yakuniy ball hisoblash
+        # Test MS bo'lsa, ball e'lon qilinishini kutadi
         if test_type == "rush":
-            # Eng avval o'quvchining javobini bazaga yozamiz (statistikaga ta'sir qilishi uchun)
             db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
-            
-            # DINAMIK HISOBLASH OLIB TASHLANDI. U FAQAT EXCEL YUKLANGANDA BIR MARTA HISUBLANADI!
             final_ms_ball_text = "Kutilmoqda ⏳"
             sertifikat_daraja_text = "Faylda e'lon qilinadi 📊"
         else:
@@ -694,7 +718,7 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # O'quvchiga yuboriladigan yakuniy formatlangan xabar
+        # O'quvchiga yuboriladigan xabar
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
