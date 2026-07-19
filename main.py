@@ -805,18 +805,7 @@ def handle_web_app(msg):
         result_msg += f"📝 *Batafsil tahlil:*\n{analysis_text}"
         
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
-
-        admin_msg = (
-            f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
-            f"👤 *O'quvchi:* {safe_user_name} (`{msg.chat.id}`)\n"
-            f"🔢 *Test kodi:* {safe_code}\n"
-            f"🎯 *To'g'ri soni:* {score} / {total_q}\n"
-            f"📈 *Ball / Daraja:* {final_ms_ball_text} / {sertifikat_daraja_text}\n\n"
-            f"📝 *Tahlil:*\n{analysis_text}"
-        )
-        safe_send(SUPER_ADMIN, admin_msg, parse_mode="Markdown")
         return
-
     safe_send(msg.chat.id, "✅ Ma'lumot qabul qilindi.", reply_markup=main_menu())
 
 # --- Flask Server ---
