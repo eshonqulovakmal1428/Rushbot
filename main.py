@@ -646,7 +646,7 @@ def handle_web_app(msg):
     # 1. Test kiritilayotganda
     if state.get("action") == "admin_save":
         test_type = state.get("test_type", "pdf")
-        test_code = state.get("code")
+        test_code = state.get("code", "Noma'lum")
 
         try:
             data = json.loads(raw_data)
@@ -672,14 +672,17 @@ def handle_web_app(msg):
         if msg.chat.id != SUPER_ADMIN:
             user_name = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
             u_name = user_name[0] if user_name else str(msg.chat.id)
-            notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {u_name}\n🔢 *Kod:* `{test_code}`\n📚 *Tur:* {test_type.upper()}"
+            # Markdown xatoliklarni oldini olish uchun (Masalan ismda _ bo'lsa qulamasligi uchun)
+            safe_u_name = str(u_name).replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+            safe_code = str(test_code).replace("_", "\\_").replace("*", "\\*")
+            notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {safe_u_name}\n🔢 *Kod:* `{safe_code}`\n📚 *Tur:* {test_type.upper()}"
             safe_send(SUPER_ADMIN, notify_msg, parse_mode="Markdown")
         return
 
     # 2. O'quvchi javob yuborganda
     if state.get("action") == "student_solve":
-        user_name = state.get("name")
-        code = state.get("code")
+        user_name = state.get("name", "Noma'lum")
+        code = state.get("code", "Noma'lum")
         test_type = state.get("type", "pdf")
         correct_answers_raw = state.get("correct", "")
         
@@ -712,7 +715,9 @@ def handle_web_app(msg):
                 ans_bin += "0"
                 disp_c_a = str(correct_answers[i]).strip().upper() if len(str(correct_answers[i]).strip()) == 1 else str(correct_answers[i]).strip()
                 if not disp_c_a: disp_c_a = "-"
-                analysis_text += f"{i+1}.❌({disp_c_a})  "
+                # Qavs ichida markdown format buzuvchilar kelib qolsa, ularni escape qilish
+                safe_disp = disp_c_a.replace("_", "\\_").replace("*", "\\*")
+                analysis_text += f"{i+1}.❌({safe_disp})  "
 
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
@@ -734,11 +739,18 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
+        # -------------------------------------------------------------
+        # MARKDOWN HIMOYASI: Ismlar yoki kodlar tarkibida "_" bo'lsa bot "qulab tushib" 
+        # jim qolmasligi uchun himoyaviy belgilarni (Escape) qo'shdim.
+        # -------------------------------------------------------------
+        safe_user_name = str(user_name).replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+        safe_code = str(code).replace("_", "\\_").replace("*", "\\*")
+
         # O'quvchiga yuboriladigan xabar
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
-            f"👤 *O'quvchi:* {user_name}\n"
-            f"🔢 *Test kodi:* {code}\n"
+            f"👤 *O'quvchi:* {safe_user_name}\n"
+            f"🔢 *Test kodi:* {safe_code}\n"
             f"🎯 *To'g'ri javoblar:* {score} / {total_q} ta\n"
             f"📈 *To'plangan ball:* {final_ms_ball_text}\n"
             f"📜 *Sertifikat darajasi:* {sertifikat_daraja_text}\n\n"
@@ -751,11 +763,11 @@ def handle_web_app(msg):
         
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
 
-        # Super admonga hisobot
+        # Super adminga hisobot
         admin_msg = (
             f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
-            f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
-            f"🔢 *Test kodi:* {code}\n"
+            f"👤 *O'quvchi:* {safe_user_name} (`{msg.chat.id}`)\n"
+            f"🔢 *Test kodi:* {safe_code}\n"
             f"🎯 *To'g'ri soni:* {score} / {total_q}\n"
             f"📈 *Ball / Daraja:* {final_ms_ball_text} / {sertifikat_daraja_text}\n\n"
             f"📝 *Tahlil:*\n{analysis_text}"
