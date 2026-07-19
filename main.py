@@ -184,7 +184,6 @@ def go_home(msg):
     clear_state(msg.chat.id)
     safe_send(msg.chat.id, "🏠 Asosiy menyu:", reply_markup=main_menu())
 
-# Yangilangan Telegram Menyusi
 def set_commands():
     bot.set_my_commands([
         BotCommand("start", "Botni qayta ishga tushirish"),
@@ -324,38 +323,27 @@ def cmd_info(msg):
 # --- YAKUNIY: GIBRID-RASCH (INTERPOLATSIYA USULI BILAN) ---
 # =========================================================
 
-def recalculate_ms_item_weights(code, total_q=55):
-    """
-    Rasch modeli bo'yicha savollar qiyinchiligini aniqlaydi.
-    Eng qiyin savollarga yuqori og'irlik, osonlariga past og'irlik beradi.
-    """
-    rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
-    n_users = len(rows)
+def recalculate_ms_item_weights_from_list(bins_list, total_q=55):
+    """ Berilgan 1-0 ketma-ketliklar ro'yxatidan savollar og'irligini dinamik hisoblaydi """
+    n_users = len(bins_list)
     
-    # Agar hali hech kim ishlamagan bo'lsa, barcha savol teng qiyinchilikda
     if n_users == 0:
         return [1.0] * total_q
 
     pass_rates = []
     
-    # Har bir savol uchun topilish foizini (pass rate) hisoblash
     for i in range(total_q):
-        correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
+        correct_count = sum(1 for b in bins_list if len(b) > i and b[i] == '1')
         p = correct_count / n_users
-        
-        # Limitlar: 100% ni 95% ga, 0% ni 5% ga cheklaymiz (cheksizlik xatosi bermasligi uchun)
         p = max(0.05, min(0.95, p)) 
         pass_rates.append(p)
         
-    # Logitlar (Qiyinchilik indeksi: b = ln((1-p)/p))
     logits = [math.log((1 - p) / p) for p in pass_rates]
     min_l, max_l = min(logits), max(logits)
     
-    # Hamma savol bir xil topilgan bo'lsa
     if max_l == min_l:
         return [1.0] * total_q
         
-    # Logitlarni 1.0 dan 5.0 gacha bo'lgan og'irliklarga (weight) o'tkazamiz
     weights = []
     for l in logits:
         w = 1.0 + ((l - min_l) / (max_l - min_l)) * 4.0
@@ -363,55 +351,73 @@ def recalculate_ms_item_weights(code, total_q=55):
         
     return weights
 
+def recalculate_ms_item_weights(code, total_q=55):
+    """ Rasch modeli bo'yicha MS test uchun bazadan ma'lumot o'qiydi. """
+    rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
+    bins_list = [r[0] for r in rows]
+    return recalculate_ms_item_weights_from_list(bins_list, total_q)
+
 
 def calculate_ms_final_score(user_answers_bin, item_weights):
-    """
-    O'quvchining to'g'ri javoblari soni bo'yicha bazaviy qolipini olib, 
-    u yechgan savollar qiyinchiligiga qarab oraliqdagi aniq o'nlik ballni beradi.
+    """ O'quvchining to'g'ri javoblari soni bo'yicha bazaviy qolipini olib, 
+        u yechgan savollar qiyinchiligiga qarab ballni tarqatadi. (70 da qotib qolish muammosi tuzatildi)
     """
     togri_soni = user_answers_bin.count('1')
     min_len = min(len(user_answers_bin), len(item_weights))
     
-    # 100% to'g'ri topganlar uchun yoki 0 ta topganlar uchun istisnolar
     if togri_soni == min_len and togri_soni > 0:
         return 100.0, "A+"
     if togri_soni == 0:
         return 0.0, "—"
     
-    # 1. ZONA CHEGARALARINI BELGILASH (Qoliplar)
+    # 1. ZONA CHEGARALARINI DINAMIK BELGILASH (To'g'ri soniga qarab kengaytirilgan)
     if togri_soni >= 42:
-        min_ball, max_ball = 70.0, 100.0  # A+
+        step = (100.0 - 70.0) / (min_len - 42) if min_len > 42 else 30.0
+        min_ball = 70.0 + (togri_soni - 42) * step
+        max_ball = min_ball + step
+        if max_ball > 100.0: max_ball = 100.0
     elif togri_soni >= 36:
-        min_ball, max_ball = 65.0, 69.9   # A
+        step = (69.9 - 65.0) / (41 - 36)
+        min_ball = 65.0 + (togri_soni - 36) * step
+        max_ball = min_ball + step
     elif togri_soni >= 30:
-        min_ball, max_ball = 60.0, 64.9   # B+
+        step = (64.9 - 60.0) / (35 - 30)
+        min_ball = 60.0 + (togri_soni - 30) * step
+        max_ball = min_ball + step
     elif togri_soni >= 26:
-        min_ball, max_ball = 55.0, 59.9   # B
+        step = (59.9 - 55.0) / (29 - 26)
+        min_ball = 55.0 + (togri_soni - 26) * step
+        max_ball = min_ball + step
     elif togri_soni >= 21:
-        min_ball, max_ball = 50.0, 54.9   # C+
+        step = (54.9 - 50.0) / (25 - 21)
+        min_ball = 50.0 + (togri_soni - 21) * step
+        max_ball = min_ball + step
     elif togri_soni >= 15:
-        min_ball, max_ball = 46.0, 49.9   # C
+        step = (49.9 - 46.0) / (20 - 15)
+        min_ball = 46.0 + (togri_soni - 15) * step
+        max_ball = min_ball + step
     else:
-        # Yiqilganlar zonasi (0 - 45.9) - To'g'ri soniga qarab pastki qism ham dinamik o'sadi
-        base_min = (togri_soni / 15.0) * 40.0
-        min_ball, max_ball = base_min, 45.9
+        # Yiqilganlar zonasi
+        base_min = (togri_soni / 15.0) * 45.9
+        step = (45.9 / 15.0)
+        min_ball = base_min
+        max_ball = min_ball + step
+        if max_ball > 45.9: max_ball = 45.9
 
     # 2. O'QUVCHINING XOM BALI (Faqat to'g'ri topilgan savollar og'irligi yig'indisi)
     user_w_sum = sum(item_weights[i] for i in range(min_len) if user_answers_bin[i] == '1')
     
     # 3. INTERPOLATSIYA UCHUN MIN/MAX CHEGARALAR
-    # N ta to'g'ri javob uchun mumkin bo'lgan eng kam (eng osonlari) va eng ko'p (eng qiyinlari) ball
     sorted_w = sorted(item_weights[:min_len])
     min_w_sum = sum(sorted_w[:togri_soni])
     max_w_sum = sum(sorted_w[-togri_soni:])
     
     # 4. ORALIQDAGI FOIZNI HISOBLASH
     if max_w_sum == min_w_sum:
-        ratio = 0.5 # Og'irliklar bir xil bo'lsa o'rta arifmetik
+        ratio = 0.5 
     else:
         ratio = (user_w_sum - min_w_sum) / (max_w_sum - min_w_sum)
         
-    # Matematik xatoliklarning oldini olish
     ratio = max(0.0, min(1.0, ratio))
     
     # 5. YAKUNIY BALLNI CHIQARISH (Qolip ichiga o'tqazish)
@@ -582,11 +588,9 @@ def _user_export_results(msg):
             output = io.StringIO()
             writer = csv.writer(output, delimiter=';')
 
-            # 1. Barcha abituriyentlar sonidan eng so'nggi aniq qiyinchilikni hisoblash
             item_weights = recalculate_ms_item_weights(code, total_q)
             evaluated_students = []
             
-            # 2. Barchani qayta taroziga qoyamiz
             for r in rows:
                 name, score, analysis_text = r[1], r[2], r[4]
                 ans_bin = extract_bin_from_analysis(analysis_text)
@@ -602,10 +606,8 @@ def _user_export_results(msg):
                     "daraja": daraja
                 })
                 
-            # 3. O'quvchilarni yangi, haqqoniy MS Bali bo'yicha tartiblaymiz (Reyting)
             evaluated_students.sort(key=lambda x: (x["ball"], x["score"]), reverse=True)
             
-            # 4. Sarlavha
             writer.writerow(["O'rni", "Ism va Familiya", "Yakuniy MS Ball", "Sertifikat Darajasi", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
             
             for idx, st in enumerate(evaluated_students, 1):
@@ -629,17 +631,37 @@ def _user_export_results(msg):
             
     else:
         # ODATIY TEST - chatga to'g'ridan-to'g'ri xabar sifatida yuboriladi
+        
+        # Admin ekanligini tekshirish (MS ballarni faqat unga chiqarish uchun)
+        is_admin = (msg.chat.id == SUPER_ADMIN or msg.chat.id == creator_id)
+        
+        item_weights = []
+        if is_admin:
+            # Odatiy test natijalaridan vaqtinchalik ans_bin larni yig'ib MS og'irliklarni hisoblaymiz
+            all_ans_bins = []
+            for r in rows:
+                ans_bin = extract_bin_from_analysis(r[4])
+                if not ans_bin or len(ans_bin) < total_q:
+                    ans_bin = "1" * r[2] + "0" * (total_q - r[2])
+                all_ans_bins.append(ans_bin)
+            item_weights = recalculate_ms_item_weights_from_list(all_ans_bins, total_q)
+            
         lines = [f"📊 *{code}* - test natijalari:\n"]
         for idx, r in enumerate(rows, 1):
             name, score, total = r[1], r[2], r[3]
-            # Markdown xatoliklari oldini olish uchun (masalan ismda _ qatnashsa)
             safe_name = str(name).replace("_", "\\_").replace("*", "\\*")
-            lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri")
             
+            if is_admin:
+                ans_bin = extract_bin_from_analysis(r[4])
+                if not ans_bin or len(ans_bin) < total_q:
+                    ans_bin = "1" * score + "0" * (total_q - score)
+                ball, _ = calculate_ms_final_score(ans_bin, item_weights)
+                lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri *(MS: {ball} ball)*")
+            else:
+                lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri")
+                
         result_text = "\n".join(lines)
         
-        # Telegram bitta xabarda maksimal 4096 ta belgini qabul qiladi. 
-        # Shuning uchun agar natijalar ro'yxati juda uzun bo'lsa, xabarni bo'lib yuboramiz.
         if len(result_text) > 4000:
             chunks = [result_text[i:i+4000] for i in range(0, len(result_text), 4000)]
             for chunk in chunks:
@@ -683,7 +705,6 @@ def handle_web_app(msg):
         if msg.chat.id != SUPER_ADMIN:
             user_name = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
             u_name = user_name[0] if user_name else str(msg.chat.id)
-            # Markdown xatoliklarni oldini olish uchun (Masalan ismda _ bo'lsa qulamasligi uchun)
             safe_u_name = str(u_name).replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
             safe_code = str(test_code).replace("_", "\\_").replace("*", "\\*")
             notify_msg = f"🆕 *Yangi test yuklandi!*\n\n👤 *Yuklovchi:* {safe_u_name}\n🔢 *Kod:* `{safe_code}`\n📚 *Tur:* {test_type.upper()}"
@@ -726,18 +747,15 @@ def handle_web_app(msg):
                 ans_bin += "0"
                 disp_c_a = str(correct_answers[i]).strip().upper() if len(str(correct_answers[i]).strip()) == 1 else str(correct_answers[i]).strip()
                 if not disp_c_a: disp_c_a = "-"
-                # Qavs ichida markdown format buzuvchilar kelib qolsa, ularni escape qilish
                 safe_disp = disp_c_a.replace("_", "\\_").replace("*", "\\*")
                 analysis_text += f"{i+1}.❌({safe_disp})  "
 
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
 
-        # Tizim xatolari va analizni Asosiy Jadvalga yozamiz
         db_exec("INSERT INTO results (user_id, name, code, score, total, analysis_text) VALUES (?,?,?,?,?,?)",
                 (msg.chat.id, user_name, code, score, total_q, analysis_text))
 
-        # Test MS bo'lsa, ball e'lon qilinishini kutadi
         if test_type == "rush":
             db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
             final_ms_ball_text = "Kutilmoqda ⏳"
@@ -750,14 +768,9 @@ def handle_web_app(msg):
 
         clear_state(msg.chat.id)
 
-        # -------------------------------------------------------------
-        # MARKDOWN HIMOYASI: Ismlar yoki kodlar tarkibida "_" bo'lsa bot "qulab tushib" 
-        # jim qolmasligi uchun himoyaviy belgilarni (Escape) qo'shdim.
-        # -------------------------------------------------------------
         safe_user_name = str(user_name).replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
         safe_code = str(code).replace("_", "\\_").replace("*", "\\*")
 
-        # O'quvchiga yuboriladigan xabar
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {safe_user_name}\n"
@@ -774,7 +787,6 @@ def handle_web_app(msg):
         
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
 
-        # Super adminga hisobot
         admin_msg = (
             f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
             f"👤 *O'quvchi:* {safe_user_name} (`{msg.chat.id}`)\n"
