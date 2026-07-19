@@ -576,12 +576,12 @@ def _user_export_results(msg):
         safe_send(msg.chat.id, "❌ Bu test bo'yicha hech qanday natija topilmadi.", reply_markup=main_menu())
         return
 
-    try:
-        output = io.StringIO()
-        # delimiter=';' excelda qatorlarning tartibli bo'linib chiqishini ta'minlaydi
-        writer = csv.writer(output, delimiter=';')
+    if test_type == "rush":
+        # MS TEST - fayl orqali saqlanadi
+        try:
+            output = io.StringIO()
+            writer = csv.writer(output, delimiter=';')
 
-        if test_type == "rush":
             # 1. Barcha abituriyentlar sonidan eng so'nggi aniq qiyinchilikni hisoblash
             item_weights = recalculate_ms_item_weights(code, total_q)
             evaluated_students = []
@@ -605,37 +605,48 @@ def _user_export_results(msg):
             # 3. O'quvchilarni yangi, haqqoniy MS Bali bo'yicha tartiblaymiz (Reyting)
             evaluated_students.sort(key=lambda x: (x["ball"], x["score"]), reverse=True)
             
-            # 4. Sarlavha (To'g'ri javob soni olib tashlandi, oxirgi ustunga yangi foiz qo'shildi)
+            # 4. Sarlavha
             writer.writerow(["O'rni", "Ism va Familiya", "Yakuniy MS Ball", "Sertifikat Darajasi", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
             
             for idx, st in enumerate(evaluated_students, 1):
                 ball_val = st["ball"]
                 foiz_val = 100.0 if ball_val >= 65.0 else round((ball_val * 100) / 65.0, 1)
                 writer.writerow([f"{idx}-o'rin", st["name"], ball_val, st["daraja"], f"{foiz_val}%"])
-                
+
+            csv_text = output.getvalue()
+            csv_bytes = '\ufeff'.encode('utf8') + csv_text.encode('utf8')
+
+            bot.send_document(
+                chat_id=msg.chat.id,
+                document=(f"{code}_Natijalar.csv", csv_bytes),
+                caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar xatoliklarni tahlil qilish asosida qayta o'lchandi._",
+                parse_mode="Markdown",
+                reply_markup=main_menu()
+            )
+        except Exception as e:
+            log.error(f"Fayl yaratish xatosi: {e}")
+            safe_send(msg.chat.id, f"❌ Xatolik yuz berdi:\n`{str(e)}`", reply_markup=main_menu())
+            
+    else:
+        # ODATIY TEST - chatga to'g'ridan-to'g'ri xabar sifatida yuboriladi
+        lines = [f"📊 *{code}* - test natijalari:\n"]
+        for idx, r in enumerate(rows, 1):
+            name, score, total = r[1], r[2], r[3]
+            # Markdown xatoliklari oldini olish uchun (masalan ismda _ qatnashsa)
+            safe_name = str(name).replace("_", "\\_").replace("*", "\\*")
+            lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri")
+            
+        result_text = "\n".join(lines)
+        
+        # Telegram bitta xabarda maksimal 4096 ta belgini qabul qiladi. 
+        # Shuning uchun agar natijalar ro'yxati juda uzun bo'lsa, xabarni bo'lib yuboramiz.
+        if len(result_text) > 4000:
+            chunks = [result_text[i:i+4000] for i in range(0, len(result_text), 4000)]
+            for chunk in chunks:
+                safe_send(msg.chat.id, chunk, parse_mode="Markdown")
+            safe_send(msg.chat.id, "Barcha natijalar yuborildi ✅", reply_markup=main_menu())
         else:
-            writer.writerow(["O'rni", "Ism va Familiya", "Sertifikat bali", "Daraja", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
-            for idx, r in enumerate(rows, 1):
-                name, score, total = r[1], r[2], r[3]
-                ball_val = round((score / total) * 100, 1) if total else 0.0
-                daraja = get_daraja(ball_val)
-                foiz_val = 100.0 if ball_val >= 65.0 else round((ball_val * 100) / 65.0, 1)
-                writer.writerow([f"{idx}-o'rin", name, ball_val, daraja, f"{foiz_val}%"])
-
-        csv_text = output.getvalue()
-        # '\ufeff' (BOM) orqali Excel'da O'zbek harflari ieroglif bo'lib ketmasligini ta'minlaymiz
-        csv_bytes = '\ufeff'.encode('utf8') + csv_text.encode('utf8')
-
-        bot.send_document(
-            chat_id=msg.chat.id,
-            document=(f"{code}_Natijalar.csv", csv_bytes),
-            caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar xatoliklarni tahlil qilish asosida qayta o'lchandi._",
-            parse_mode="Markdown",
-            reply_markup=main_menu()
-        )
-    except Exception as e:
-        log.error(f"Fayl yaratish xatosi: {e}")
-        safe_send(msg.chat.id, f"❌ Xatolik yuz berdi:\n`{str(e)}`", reply_markup=main_menu())
+            safe_send(msg.chat.id, result_text, parse_mode="Markdown", reply_markup=main_menu())
 
 # --- Web App Handler (Data Receiver) ---
 @bot.message_handler(content_types=["web_app_data"])
