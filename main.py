@@ -163,6 +163,10 @@ def main_menu():
         types.KeyboardButton("📊 Natijalarim"),
         types.KeyboardButton("📊 Natijalarni olish")
     )
+    kb.add(
+        types.KeyboardButton("✏️ Ismni o'zgartirish"),
+        types.KeyboardButton("🔄 Qayta ishga tushirish")
+    )
     return kb
 
 def back_kb():
@@ -276,6 +280,17 @@ def _register_user(msg):
 @bot.message_handler(func=lambda m: m.text == "🔙 Ortga qaytish")
 def handle_back(msg):
     go_home(msg)
+
+@bot.message_handler(func=lambda m: m.text == "🔄 Qayta ishga tushirish")
+def handle_restart(msg):
+    cmd_start(msg)
+
+@bot.message_handler(func=lambda m: m.text == "✏️ Ismni o'zgartirish")
+def handle_change_name(msg):
+    if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
+    m = safe_send(msg.chat.id, "✏️ Yangi to'liq ism va familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
+    if m:
+        bot.register_next_step_handler(m, _register_user)
 
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarim")
 def cmd_my_results(msg):
