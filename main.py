@@ -147,7 +147,7 @@ def progress_bar(score, total):
         return ""
     pct   = score / total
     green = int(pct * 10)
-    return "🟩" * green + "⬜" * (10 - green) + f"  {int(pct * 100)}%"
+    return "🟩" * green + "⬜️" * (10 - green) + f"  {int(pct * 100)}%"
 
 def main_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -605,19 +605,22 @@ def _user_export_results(msg):
             # 3. O'quvchilarni yangi, haqqoniy MS Bali bo'yicha tartiblaymiz (Reyting)
             evaluated_students.sort(key=lambda x: (x["ball"], x["score"]), reverse=True)
             
-            # 4. Sarlavha
-            writer.writerow(["O'rni", "Ism va Familiya", "To'g'ri javob soni", "Yakuniy MS Ball", "Sertifikat Darajasi"])
+            # 4. Sarlavha (To'g'ri javob soni olib tashlandi, oxirgi ustunga yangi foiz qo'shildi)
+            writer.writerow(["O'rni", "Ism va Familiya", "Yakuniy MS Ball", "Sertifikat Darajasi", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
             
             for idx, st in enumerate(evaluated_students, 1):
-                writer.writerow([f"{idx}-o'rin", st["name"], st["score"], st["ball"], st["daraja"]])
+                ball_val = st["ball"]
+                foiz_val = 100.0 if ball_val >= 65.0 else round((ball_val * 100) / 65.0, 1)
+                writer.writerow([f"{idx}-o'rin", st["name"], ball_val, st["daraja"], f"{foiz_val}%"])
                 
         else:
-            writer.writerow(["O'rni", "Ism va Familiya", "To'g'ri javob soni", "Foiz (%)", "Daraja"])
+            writer.writerow(["O'rni", "Ism va Familiya", "Sertifikat bali", "Daraja", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
             for idx, r in enumerate(rows, 1):
                 name, score, total = r[1], r[2], r[3]
-                ball = round((score / total) * 100, 1) if total else 0.0
-                daraja = get_daraja(ball)
-                writer.writerow([f"{idx}-o'rin", name, score, f"{ball}%", daraja])
+                ball_val = round((score / total) * 100, 1) if total else 0.0
+                daraja = get_daraja(ball_val)
+                foiz_val = 100.0 if ball_val >= 65.0 else round((ball_val * 100) / 65.0, 1)
+                writer.writerow([f"{idx}-o'rin", name, ball_val, daraja, f"{foiz_val}%"])
 
         csv_text = output.getvalue()
         # '\ufeff' (BOM) orqali Excel'da O'zbek harflari ieroglif bo'lib ketmasligini ta'minlaymiz
