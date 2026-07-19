@@ -22,7 +22,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # --- Konfiguratsiya ---
-TOKEN       = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
+TOKEN        = os.environ.get("BOT_TOKEN", "8505975357:AAEtUiLlhjg7joD-iJN2JPqj0fKmKyIYpw0")
 SUPER_ADMIN = int(os.environ.get("ADMIN_ID", "5541008041"))
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://eshoonqulov-math-testbot.netlify.app/")
 RUSH_WEB_APP_URL = os.environ.get("RUSH_WEB_APP_URL", "https://fluffy-kulfi-1a423c.netlify.app/")
@@ -286,62 +286,87 @@ def cmd_my_results(msg):
         lines.append(f"*{i}.* Kod: `{code}` — `{score}/{total}`\n{bar}\n_{created_at}_\n")
     safe_send(msg.chat.id, "\n".join(lines), parse_mode="Markdown", reply_markup=main_menu())
 
-# --- Rasch Logic ---
-def get_rasch_item_difficulties(code, total_q):
-    rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
-    if not rows or len(rows) < 3:
-        return [0.0] * total_q
+# --- YANGI REJADAGI GIBRID-RASCH LOGIKASI ---
 
-    difficulties = []
+def recalculate_ms_item_weights(code, total_q=55):
+    """
+    Kanal a'zolari ko'paygani sari, o'quvchilar xatolarini tahlil qilib, 
+    savollarning dynamic qiyinchilik vaznini qayta belgilaydi.
+    """
+    rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
+    
+    # Agar ma'lumot yetarli bo'lmasa, static osondan qiyinga taqsimot qaytariladi
+    if not rows or len(rows) < 2:
+        weights = []
+        for i in range(total_q):
+            if i < 20: weights.append(1.7)
+            elif i < 40: weights.append(2.0)
+            else: weights.append(3.1)
+        return weights
+
     n_users = len(rows)
+    pass_rates = []
+    
     for i in range(total_q):
         correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
         p = correct_count / n_users
-        p = max(0.05, min(0.95, p))
-        b = math.log((1 - p) / p)
-        difficulties.append(b)
-    return difficulties
+        p = max(0.05, min(0.95, p)) # Overflow cheklovi
+        pass_rates.append(p)
+        
+    logits = [math.log((1 - p) / p) for p in pass_rates]
+    min_l, max_l = min(logits), max(logits)
+    
+    raw_weights = []
+    for l in logits:
+        if max_l == min_l:
+            w = 2.0
+        else:
+            # Qiyin savol -> 3.5 ballgacha, Oson savol -> 1.5 ballgacha dynamic cho'ziladi
+            w = 1.5 + ((l - min_l) / (max_l - min_l)) * (3.5 - 1.5)
+        raw_weights.append(w)
+        
+    # Guruh yig'indisini 120 ball atrofida ushlab turamiz (Qiyin javob yechganni ko'tarish uchun)
+    current_sum = sum(raw_weights)
+    target_sum = 120.0
+    final_weights = [round((w * target_sum) / current_sum, 2) for w in raw_weights]
+    
+    return final_weights
 
-def calculate_rasch_theta(score, b_items):
-    total_q = len(b_items)
-    if score <= 0: return -3.0
-    if score >= total_q: return 3.0
-    theta = math.log(score / (total_q - score))
-    for _ in range(10):
-        prob_sum = 0
-        info_sum = 0
-        for b in b_items:
-            try:
-                p = math.exp(theta - b) / (1 + math.exp(theta - b))
-            except OverflowError:
-                p = 1.0 if (theta - b) > 0 else 0.0
-            prob_sum += p
-            info_sum += p * (1 - p)
-        diff = prob_sum - score
-        if abs(diff) < 0.01: break
-        if info_sum > 0: theta -= diff / info_sum
-    return theta
+def calculate_ms_final_score(user_answers_bin, item_weights):
+    """
+    O'quvchi to'plagan dynamic ballni siz bergan qat'iy to'g'ri soni chegaralari bo'yicha kesadi.
+    """
+    togri_soni = user_answers_bin.count('1')
+    raw_ball = 0.0
+    
+    for i, bit in enumerate(user_answers_bin):
+        if bit == '1':
+            raw_ball += item_weights[i]
+            
+    # SIZ BELGILAGAN QAT'IY SHIFT (CEILING LIMITER) QOIDASI
+    if togri_soni >= 42:   max_ruxsat_ball = 100.0   # A+ minimal 42 ta
+    elif togri_soni >= 36: max_ruxsat_ball = 69.9    # A minimal 36 ta
+    elif togri_soni >= 30: max_ruxsat_ball = 64.9    # B+ minimal 30 ta
+    elif togri_soni >= 26: max_ruxsat_ball = 59.9    # B minimal 26 ta
+    elif togri_soni >= 21: max_ruxsat_ball = 54.9    # C+ minimal 21 ta
+    elif togri_soni >= 15: max_ruxsat_ball = 49.9    # C minimal 15 ta
+    else:                  max_ruxsat_ball = 45.9    # Daraja berilmaydi hududi
 
-def theta_to_ball(theta):
-    p = 1 / (1 + math.exp(-theta))
-    return p * 100
-
-# --- YANGI QAT'IY BAHOLASH TIZIMI (MS Testlar uchun) ---
-def get_ms_grade_and_ball(score, rasch_ball):
-    if score < 15:
-        return round(min(rasch_ball, 45.9), 1), "—"
-    elif 15 <= score < 20:
-        return round(max(46.0, min(rasch_ball, 49.9)), 1), "C"
-    elif 20 <= score < 24:
-        return round(max(50.0, min(rasch_ball, 54.9)), 1), "C+"
-    elif 24 <= score < 29:
-        return round(max(55.0, min(rasch_ball, 59.9)), 1), "B"
-    elif 29 <= score < 35:
-        return round(max(60.0, min(rasch_ball, 64.9)), 1), "B+"
-    elif 35 <= score < 42:
-        return round(max(65.0, min(rasch_ball, 69.9)), 1), "A"
-    else:
-        return round(max(70.0, rasch_ball), 1), "A+"
+    # Avtomatik tushirish (kesuvchi qaychi)
+    yakuniy_ball = min(raw_ball, max_ruxsat_ball)
+    yakuniy_ball = round(max(0.0, yakuniy_ball), 1)
+    
+    # Yakuniy ball asosida DTM sertifikat darajasini belgilash
+    if togri_soni < 15 or yakuniy_ball < 46.0:
+        daraja = "Darajaga yetmadi (—)"
+    elif 46.0 <= yakuniy_ball < 50.0:   daraja = "C"
+    elif 50.0 <= yakuniy_ball < 55.0:   daraja = "C+"
+    elif 55.0 <= yakuniy_ball < 60.0:   daraja = "B"
+    elif 60.0 <= yakuniy_ball < 65.0:   daraja = "B+"
+    elif 65.0 <= yakuniy_ball < 70.0:   daraja = "A"
+    else:                               daraja = "A+"
+        
+    return yakuniy_ball, daraja
 
 def get_daraja(ball):
     if ball >= 70: return "A+"
@@ -430,14 +455,14 @@ def _user_base_deadline(msg):
     deadline = msg.text.strip()
     if deadline != "0":
         try: datetime.strptime(deadline, "%Y-%m-%d %H:%M")
-        except:
-            m = safe_send(msg.chat.id, "❌ Noto'g'ri format! (YYYY-MM-DD HH:MM) yoki 0:")
-            if m: bot.register_next_step_handler(m, _user_base_deadline)
-            return
+    except:
+        m = safe_send(msg.chat.id, "❌ Noto'g'ri format! (YYYY-MM-DD HH:MM) yoki 0:")
+        if m: bot.register_next_step_handler(m, _user_base_deadline)
+        return
 
     update_state(msg.chat.id, deadline=deadline, action="admin_save")
     state = get_state(msg.chat.id)
-    kb    = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb   = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
     test_type = state.get("test_type", "pdf")
     target_url = RUSH_WEB_APP_URL if test_type == "rush" else WEB_APP_URL
@@ -453,7 +478,7 @@ def _user_base_deadline(msg):
         kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
         safe_send(msg.chat.id, f"✅ *Kod:* `{state.get('code', '')}` (Odatiy)\n📅 *Muddat:* {deadline}\n\nTugmani bosib to'g'ri javoblarni kiriting 👇", parse_mode="Markdown", reply_markup=kb)
 
-# --- Get Results & Export (100% Tuzatilgan va Kafolatlangan qism) ---
+# --- Get Results & Export ---
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarni olish")
 def user_get_results(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
@@ -493,12 +518,22 @@ def _user_export_results(msg):
         writer.writerow(["Ism va Familiya", "To'g'ri javob soni", "Olgan bali", "Daraja"])
 
         if test_type == "rush":
-            b_items = get_rasch_item_difficulties(code, total_q)
+            # Real vaqtda dynamic hisoblangan vaznlarni tortamiz
+            item_weights = recalculate_ms_item_weights(code, total_q)
+            
+            # Har bir o'quvchining haqiqiy answers_bin qiymatini olish uchun bazaga ulanamiz
             for r in rows:
-                name, score = r[1], r[2]
-                theta = calculate_rasch_theta(score, b_items)
-                raw_ball = theta_to_ball(theta)
-                ball, daraja = get_ms_grade_and_ball(score, raw_ball)
+                u_id, name, score = r[0], r[1], r[2]
+                # Oxirgi kiritilgan answers_bin ma'lumotini natijalar jadvali bilan bog'liq holda aniqlaymiz
+                bin_row = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=? AND ROWID=(SELECT MIN(ROWID) FROM rasch_answers WHERE test_code=?)", (code, code), one=True)
+                
+                # Agar topilmasa (eskilar uchun) sun'iy generatsiya
+                if bin_row:
+                    ans_bin = bin_row[0]
+                else:
+                    ans_bin = "1" * score + "0" * (total_q - score)
+                
+                ball, daraja = calculate_ms_final_score(ans_bin, item_weights)
                 writer.writerow([name, score, ball, daraja])
         else:
             for r in rows:
@@ -601,28 +636,42 @@ def handle_web_app(msg):
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
 
+        # Rasch bazasiga yangi o'quvchining matritsasini birinchi bo'lib yozamiz (Qayta hisoblash aniq ishlashi uchun)
+        if test_type == "rush":
+            db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
+            
+            # HAR SAFAR JAVOB KELGANDA RUSH NATIJALARINI QAYTA HISOBLASH
+            item_weights = recalculate_ms_item_weights(code, total_q)
+            final_ms_ball, sertifikat_daraja = calculate_ms_final_score(ans_bin, item_weights)
+        else:
+            final_ms_ball = round((score / total_q) * 100, 1) if total_q else 0.0
+            sertifikat_daraja = get_daraja(final_ms_ball)
+
+        # Asosiy natijalar jadvaliga yozamiz
         db_exec("INSERT INTO results (user_id, name, code, score, total, analysis_text) VALUES (?,?,?,?,?,?)",
                 (msg.chat.id, user_name, code, score, total_q, analysis_text))
 
-        if test_type == "rush":
-            db_exec("INSERT INTO rasch_answers (test_code, answers_bin) VALUES (?,?)", (code, ans_bin))
-
         clear_state(msg.chat.id)
 
+        # O'quvchiga yuboriladigan yakuniy formatlangan xabar
         result_msg = (
             f"📊 *Test yakunlandi!*\n\n"
             f"👤 *O'quvchi:* {user_name}\n"
             f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q} ta savolga to'g'ri javob berdingiz\n\n"
+            f"🎯 *To'g'ri javoblar:* {score} / {total_q} ta\n"
+            f"📈 *To'plangan ball:* `{final_ms_ball}` ball\n"
+            f"📜 *Sertifikat darajasi:* *{sertifikat_daraja}*\n\n"
             f"📝 *Batafsil tahlil:*\n{analysis_text}"
         )
         safe_send(msg.chat.id, result_msg, parse_mode="Markdown", reply_markup=main_menu())
 
+        # Super admonga hisobot
         admin_msg = (
             f"📥 *Botda yangi test ishlash amalga oshdi!*\n\n"
             f"👤 *O'quvchi:* {user_name} (`{msg.chat.id}`)\n"
             f"🔢 *Test kodi:* {code}\n"
-            f"🎯 *Natija:* {score} / {total_q}\n\n"
+            f"🎯 *To'g'ri soni:* {score} / {total_q}\n"
+            f"📈 *Ball / Daraja:* `{final_ms_ball}` / *{sertifikat_daraja}*\n\n"
             f"📝 *Tahlil:*\n{analysis_text}"
         )
         safe_send(SUPER_ADMIN, admin_msg, parse_mode="Markdown")
