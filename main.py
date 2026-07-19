@@ -700,7 +700,7 @@ def handle_web_app(msg):
                 (test_code, msg.chat.id, answers_json_str, state.get("deadline", "0"), test_type, ""))
         clear_state(msg.chat.id)
         
-        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saqlandi!\n🔢 Kod: `{test_code}`", parse_mode="Markdown", reply_markup=main_menu())
+        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saq saqlandi!\n🔢 Kod: `{test_code}`", parse_mode="Markdown", reply_markup=main_menu())
         
         if msg.chat.id != SUPER_ADMIN:
             user_name = db_fetch("SELECT name FROM users WHERE user_id=?", (msg.chat.id,), one=True)
@@ -745,10 +745,8 @@ def handle_web_app(msg):
                 analysis_text += f"{i+1}.✅  "
             else:
                 ans_bin += "0"
-                disp_c_a = str(correct_answers[i]).strip().upper() if len(str(correct_answers[i]).strip()) == 1 else str(correct_answers[i]).strip()
-                if not disp_c_a: disp_c_a = "-"
-                safe_disp = disp_c_a.replace("_", "\\_").replace("*", "\\*")
-                analysis_text += f"{i+1}.❌({safe_disp})  "
+                # Odatiy va MS test uchun faqat xato ekanligini ko'rsatamiz
+                analysis_text += f"{i+1}.❌  "
 
             if (i + 1) % 5 == 0:
                 analysis_text += "\n"
