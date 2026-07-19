@@ -163,10 +163,6 @@ def main_menu():
         types.KeyboardButton("📊 Natijalarim"),
         types.KeyboardButton("📊 Natijalarni olish")
     )
-    kb.add(
-        types.KeyboardButton("✏️ Ismni o'zgartirish"),
-        types.KeyboardButton("🔄 Qayta ishga tushirish")
-    )
     return kb
 
 def back_kb():
@@ -188,9 +184,14 @@ def go_home(msg):
     clear_state(msg.chat.id)
     safe_send(msg.chat.id, "🏠 Asosiy menyu:", reply_markup=main_menu())
 
+# Yangilangan Telegram Menyusi
 def set_commands():
     bot.set_my_commands([
         BotCommand("start", "Botni qayta ishga tushirish"),
+        BotCommand("test", "Test ishlash"),
+        BotCommand("testlarim", "Natijalarim"),
+        BotCommand("edit", "Ismni o'zgartirish"),
+        BotCommand("info", "Bot haqida")
     ])
 
 set_commands()
@@ -281,17 +282,14 @@ def _register_user(msg):
 def handle_back(msg):
     go_home(msg)
 
-@bot.message_handler(func=lambda m: m.text == "🔄 Qayta ishga tushirish")
-def handle_restart(msg):
-    cmd_start(msg)
-
-@bot.message_handler(func=lambda m: m.text == "✏️ Ismni o'zgartirish")
+@bot.message_handler(commands=["edit"])
 def handle_change_name(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
     m = safe_send(msg.chat.id, "✏️ Yangi to'liq ism va familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
     if m:
         bot.register_next_step_handler(m, _register_user)
 
+@bot.message_handler(commands=["testlarim"])
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarim")
 def cmd_my_results(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
@@ -309,6 +307,17 @@ def cmd_my_results(msg):
         bar = progress_bar(score, total)
         lines.append(f"*{i}.* Kod: `{code}` — `{score}/{total}`\n{bar}\n_{created_at}_\n")
     safe_send(msg.chat.id, "\n".join(lines), parse_mode="Markdown", reply_markup=main_menu())
+
+@bot.message_handler(commands=["info"])
+def cmd_info(msg):
+    text = (
+        "ℹ️ *Bot haqida ma'lumot:*\n\n"
+        "Ushbu bot matematika fanidan testlarni ishlash, MS (Rasch) tizimi bo'yicha baholash "
+        "va natijalarni avtomatik hisoblash uchun mo'ljallangan.\n\n"
+        "👨‍🏫 *Muallif:* Eshonqulov Akobir\n"
+        "📢 *Kanal:* @Eshonqulov\\_math"
+    )
+    safe_send(msg.chat.id, text, parse_mode="Markdown")
 
 # --- YANGI REJADAGI GIBRID-RASCH LOGIKASI ---
 
@@ -407,6 +416,7 @@ def get_daraja(ball):
     else: return "—"
 
 # --- Student Test Solving ---
+@bot.message_handler(commands=["test"])
 @bot.message_handler(func=lambda m: m.text in ["📝 Odatiy test ishlash", "📈 MS test ishlash"])
 def cmd_student(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
