@@ -319,23 +319,22 @@ def cmd_info(msg):
     )
     safe_send(msg.chat.id, text, parse_mode="Markdown")
 
+
 # =========================================================
-# --- YAKUNIY: GIBRID-RASCH (SOF RASCH + KESISH QOIDASI) ---
+# --- YAKUNIY: GIBRID-RASCH (INTERPOLATSIYA USULI BILAN) ---
 # =========================================================
 
 def recalculate_ms_item_weights(code, total_q=55):
     """
-    Sof Rasch modeli: Hatto 1 kishi ishlagan bo'lsa ham, savollarning real
-    topilish foiziga (p) qarab og'irlikni dinamik hisoblaydi.
-    Limiter qat'iy ishlagani uchun, 1 kishining bali sakrab ketmaydi.
-    Faqat fayl yuklanayotganda ishlaydi!
+    Rasch modeli bo'yicha savollar qiyinchiligini aniqlaydi.
+    Eng qiyin savollarga yuqori og'irlik, osonlariga past og'irlik beradi.
     """
     rows = db_fetch("SELECT answers_bin FROM rasch_answers WHERE test_code=?", (code,))
     n_users = len(rows)
     
-    # Agar hali hech kim ishlamagan bo'lsa (fayl bo'sh bo'lsa), hamma savolga teng ball.
+    # Agar hali hech kim ishlamagan bo'lsa, barcha savol teng qiyinchilikda
     if n_users == 0:
-        return [round(120.0 / total_q, 2)] * total_q
+        return [1.0] * total_q
 
     pass_rates = []
     
@@ -344,7 +343,7 @@ def recalculate_ms_item_weights(code, total_q=55):
         correct_count = sum(1 for row in rows if len(row[0]) > i and row[0][i] == '1')
         p = correct_count / n_users
         
-        # Matematik xato bermasligi uchun 100% ni 95% ga, 0% ni 5% ga cheklaymiz
+        # Limitlar: 100% ni 95% ga, 0% ni 5% ga cheklaymiz (cheksizlik xatosi bermasligi uchun)
         p = max(0.05, min(0.95, p)) 
         pass_rates.append(p)
         
@@ -352,60 +351,74 @@ def recalculate_ms_item_weights(code, total_q=55):
     logits = [math.log((1 - p) / p) for p in pass_rates]
     min_l, max_l = min(logits), max(logits)
     
-    # Logitlarni (1.5 - 3.5 ball) oralig'iga transformatsiya qilish
-    raw_weights = []
-    for l in logits:
-        if max_l == min_l:
-            w = 2.0  # Hamma bir xil yechgan bo'lsa (yoki faqat 1 kishi ishlagan bo'lsa)
-        else:
-            w = 1.5 + ((l - min_l) / (max_l - min_l)) * (3.5 - 1.5)
-        raw_weights.append(w)
+    # Hamma savol bir xil topilgan bo'lsa
+    if max_l == min_l:
+        return [1.0] * total_q
         
-    # Umumiy bazaviy og'irlikni saqlab qolamiz (Summa ~ 120 ball, sakrash uchun joy qoldiradi)
-    current_sum = sum(raw_weights)
-    target_sum = 120.0
-    final_weights = [round((w * target_sum) / current_sum, 2) for w in raw_weights]
-    
-    return final_weights
+    # Logitlarni 1.0 dan 5.0 gacha bo'lgan og'irliklarga (weight) o'tkazamiz
+    weights = []
+    for l in logits:
+        w = 1.0 + ((l - min_l) / (max_l - min_l)) * 4.0
+        weights.append(w)
+        
+    return weights
 
 
 def calculate_ms_final_score(user_answers_bin, item_weights):
     """
-    O'quvchi to'plagan xom ballni (raw_ball), siz kiritgan To'g'ri Soni (Limit) asosida
-    kesadi (Shift) yoki yetmay qolsa daraja minimumiga ko'taradi (Pol).
+    O'quvchining to'g'ri javoblari soni bo'yicha bazaviy qolipini olib, 
+    u yechgan savollar qiyinchiligiga qarab oraliqdagi aniq o'nlik ballni beradi.
     """
     togri_soni = user_answers_bin.count('1')
-    raw_ball = 0.0
-    
     min_len = min(len(user_answers_bin), len(item_weights))
     
-    # 1. Qaysi savolni topganiga qarab dinamik xom ballni yig'ish
-    for i in range(min_len):
-        if user_answers_bin[i] == '1':
-            raw_ball += item_weights[i]
-            
-    # 2. QAT'IY KAFOLAT (MIN) VA SHIFT (MAX) QOIDALARI
+    # 100% to'g'ri topganlar uchun yoki 0 ta topganlar uchun istisnolar
+    if togri_soni == min_len and togri_soni > 0:
+        return 100.0, "A+"
+    if togri_soni == 0:
+        return 0.0, "—"
+    
+    # 1. ZONA CHEGARALARINI BELGILASH (Qoliplar)
     if togri_soni >= 42:
-        min_ball, max_ball = 70.0, 100.0   # A+ uchun ochiq zona
+        min_ball, max_ball = 70.0, 100.0  # A+
     elif togri_soni >= 36:
-        min_ball, max_ball = 65.0, 69.9    # A uchun zona
+        min_ball, max_ball = 65.0, 69.9   # A
     elif togri_soni >= 30:
-        min_ball, max_ball = 60.0, 64.9    # B+ uchun zona
+        min_ball, max_ball = 60.0, 64.9   # B+
     elif togri_soni >= 26:
-        min_ball, max_ball = 55.0, 59.9    # B uchun zona
+        min_ball, max_ball = 55.0, 59.9   # B
     elif togri_soni >= 21:
-        min_ball, max_ball = 50.0, 54.9    # C+ uchun zona
+        min_ball, max_ball = 50.0, 54.9   # C+
     elif togri_soni >= 15:
-        min_ball, max_ball = 46.0, 49.9    # C uchun zona
+        min_ball, max_ball = 46.0, 49.9   # C
     else:
-        min_ball, max_ball = 0.0,  45.9    # Yiqilganlar zonasi (Max 45.9)
+        # Yiqilganlar zonasi (0 - 45.9) - To'g'ri soniga qarab pastki qism ham dinamik o'sadi
+        base_min = (togri_soni / 15.0) * 40.0
+        min_ball, max_ball = base_min, 45.9
 
-    # 3. KESISH VA KO'TARISH (Limitlar orasiga tushirish)
-    yakuniy_ball = max(raw_ball, min_ball)     # Pastdan ko'tarish
-    yakuniy_ball = min(yakuniy_ball, max_ball) # Tepadan kesish
+    # 2. O'QUVCHINING XOM BALI (Faqat to'g'ri topilgan savollar og'irligi yig'indisi)
+    user_w_sum = sum(item_weights[i] for i in range(min_len) if user_answers_bin[i] == '1')
+    
+    # 3. INTERPOLATSIYA UCHUN MIN/MAX CHEGARALAR
+    # N ta to'g'ri javob uchun mumkin bo'lgan eng kam (eng osonlari) va eng ko'p (eng qiyinlari) ball
+    sorted_w = sorted(item_weights[:min_len])
+    min_w_sum = sum(sorted_w[:togri_soni])
+    max_w_sum = sum(sorted_w[-togri_soni:])
+    
+    # 4. ORALIQDAGI FOIZNI HISOBLASH
+    if max_w_sum == min_w_sum:
+        ratio = 0.5 # Og'irliklar bir xil bo'lsa o'rta arifmetik
+    else:
+        ratio = (user_w_sum - min_w_sum) / (max_w_sum - min_w_sum)
+        
+    # Matematik xatoliklarning oldini olish
+    ratio = max(0.0, min(1.0, ratio))
+    
+    # 5. YAKUNIY BALLNI CHIQARISH (Qolip ichiga o'tqazish)
+    yakuniy_ball = min_ball + ratio * (max_ball - min_ball)
     yakuniy_ball = round(yakuniy_ball, 1)
     
-    # 4. Yakuniy ball qaysi oraliqda qotganiga qarab yakuniy daraja berish
+    # 6. DARAJA BERISH
     if togri_soni < 15 or yakuniy_ball < 46.0:
         daraja = "—"
     elif 46.0 <= yakuniy_ball < 50.0:   daraja = "C"
