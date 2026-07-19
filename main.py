@@ -360,7 +360,7 @@ def recalculate_ms_item_weights(code, total_q=55):
 
 def calculate_ms_final_score(user_answers_bin, item_weights):
     """ O'quvchining to'g'ri javoblari soni bo'yicha bazaviy qolipini olib, 
-        u yechgan savollar qiyinchiligiga qarab ballni tarqatadi.
+        u yechgan savollar qiyinchiligiga qarab ballni tarqatadi. (70 da qotib qolish muammosi tuzatildi)
     """
     togri_soni = user_answers_bin.count('1')
     min_len = min(len(user_answers_bin), len(item_weights))
@@ -370,7 +370,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
     if togri_soni == 0:
         return 0.0, "—"
     
-    # 1. ZONA CHEGARALARINI DINAMIK BELGILASH
+    # 1. ZONA CHEGARALARINI DINAMIK BELGILASH (To'g'ri soniga qarab kengaytirilgan)
     if togri_soni >= 42:
         step = (100.0 - 70.0) / (min_len - 42) if min_len > 42 else 30.0
         min_ball = 70.0 + (togri_soni - 42) * step
@@ -404,7 +404,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
         max_ball = min_ball + step
         if max_ball > 45.9: max_ball = 45.9
 
-    # 2. O'QUVCHINING XOM BALI
+    # 2. O'QUVCHINING XOM BALI (Faqat to'g'ri topilgan savollar og'irligi yig'indisi)
     user_w_sum = sum(item_weights[i] for i in range(min_len) if user_answers_bin[i] == '1')
     
     # 3. INTERPOLATSIYA UCHUN MIN/MAX CHEGARALAR
@@ -420,7 +420,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
         
     ratio = max(0.0, min(1.0, ratio))
     
-    # 5. YAKUNIY BALLNI CHIQARISH
+    # 5. YAKUNIY BALLNI CHIQARISH (Qolip ichiga o'tqazish)
     yakuniy_ball = min_ball + ratio * (max_ball - min_ball)
     yakuniy_ball = round(yakuniy_ball, 1)
     
@@ -583,13 +583,12 @@ def _user_export_results(msg):
         return
 
     if test_type == "rush":
-        # MS TEST - fayl orqali saqlanadi
+        # MS TEST - Barcha natijalarni dinamik qayta hisoblash (Fayl va Xabar orqali)
         try:
             output = io.StringIO()
             writer = csv.writer(output, delimiter=';')
 
-            # 🔥 HAR SAFAR NATIJA OLINGANDA BARCHA YUKLANGAN JAVOBLAR ASOSIDA MODEL QAYTA HISOBLANADI 🔥
-            log.info("MS modeli yangi o'quvchilar javoblari bilan qayta hisoblanmoqda...")
+            # 1. Barcha yuborilgan javoblarni hisobga olib, savollar og'irligini YANGAIDAN aniqlash
             item_weights = recalculate_ms_item_weights(code, total_q)
             evaluated_students = []
             
@@ -600,7 +599,7 @@ def _user_export_results(msg):
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * score + "0" * (total_q - score)
                 
-                # Yangilangan og'irliklarga (savollar qiyinligiga) asoslanib qayta o'qish
+                # 2. Yangi og'irliklar asosida o'quvchining joriy yakuniy balini hisoblash
                 ball, daraja = calculate_ms_final_score(ans_bin, item_weights)
                 evaluated_students.append({
                     "name": name,
@@ -609,22 +608,41 @@ def _user_export_results(msg):
                     "daraja": daraja
                 })
                 
+            # 3. O'quvchilarni yangi hisoblangan MS ballari bo'yicha reytingga joylash
             evaluated_students.sort(key=lambda x: (x["ball"], x["score"]), reverse=True)
             
-            writer.writerow(["O'rni", "Ism va Familiya", "Yakuniy MS Ball", "Sertifikat Darajasi", "Umumiy ballga nisbatan foiz ko'rsatkichi"])
+            writer.writerow(["O'rni", "Ism va Familiya", "Yakuniy MS Ball", "Sertifikat Darajasi", "To'g'ri javoblar"])
             
+            # 4. Telegram chatga yuborish uchun aniq formatlangan matn tayyorlash
+            lines = [f"📊 *{code}* - test natijalari (Dinamik MS reytingi):\n"]
+            lines.append("_Natijalar bazadagi barcha javoblar asosida qayta tahlil qilindi va savollar vazniga ko'ra yangilandi._\n")
+
             for idx, st in enumerate(evaluated_students, 1):
                 ball_val = st["ball"]
-                foiz_val = 100.0 if ball_val >= 65.0 else round((ball_val * 100) / 65.0, 1)
-                writer.writerow([f"{idx}-o'rin", st["name"], ball_val, st["daraja"], f"{foiz_val}%"])
+                safe_name = str(st["name"]).replace("_", "\\_").replace("*", "\\*")
+                
+                # Matnga qo'shish
+                lines.append(f"*{idx}.* {safe_name} — {st['score']}/{total_q} ➪ *{ball_val} ball* ({st['daraja']})")
+                # CSV ga yozish
+                writer.writerow([f"{idx}-o'rin", st["name"], ball_val, st["daraja"], f"{st['score']}/{total_q}"])
 
+            # Natijani xabar ko'rinishida yuborish
+            result_text = "\n".join(lines)
+            if len(result_text) > 4000:
+                chunks = [result_text[i:i+4000] for i in range(0, len(result_text), 4000)]
+                for chunk in chunks:
+                    safe_send(msg.chat.id, chunk, parse_mode="Markdown")
+            else:
+                safe_send(msg.chat.id, result_text, parse_mode="Markdown")
+
+            # Natijani CSV fayl ko'rinishida yuborish
             csv_text = output.getvalue()
             csv_bytes = '\ufeff'.encode('utf8') + csv_text.encode('utf8')
 
             bot.send_document(
                 chat_id=msg.chat.id,
-                document=(f"{code}_Natijalar.csv", csv_bytes),
-                caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar bazadagi barcha javoblar bir-biriga solishtirilib, eng so'nggi ma'lumotlar va qiyinchilik og'irliklari asosida qayta o'lchandi._",
+                document=(f"{code}_Dinamik_Natijalar.csv", csv_bytes),
+                caption=f"📁 *{code}* - reytingi Excel faylda.",
                 parse_mode="Markdown",
                 reply_markup=main_menu()
             )
@@ -635,17 +653,18 @@ def _user_export_results(msg):
     else:
         # ODATIY TEST - chatga to'g'ridan-to'g'ri xabar sifatida yuboriladi
         
+        # Admin ekanligini tekshirish (MS ballarni faqat unga chiqarish uchun)
         is_admin = (msg.chat.id == SUPER_ADMIN or msg.chat.id == creator_id)
         
         item_weights = []
         if is_admin:
+            # Odatiy test natijalaridan vaqtinchalik ans_bin larni yig'ib MS og'irliklarni hisoblaymiz
             all_ans_bins = []
             for r in rows:
                 ans_bin = extract_bin_from_analysis(r[4])
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * r[2] + "0" * (total_q - r[2])
                 all_ans_bins.append(ans_bin)
-            # Har safar olinganida barcha o'quvchilar natijasi asosida MS og'irlik qayta o'lchanadi
             item_weights = recalculate_ms_item_weights_from_list(all_ans_bins, total_q)
             
         lines = [f"📊 *{code}* - test natijalari:\n"]
@@ -658,9 +677,9 @@ def _user_export_results(msg):
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * score + "0" * (total_q - score)
                 ball, _ = calculate_ms_final_score(ans_bin, item_weights)
-                lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri *(MS: {ball} ball)*")
+                lines.append(f"*{idx}.* {safe_name} — {score}/{total} ta to'g'ri *(MS: {ball} ball)*")
             else:
-                lines.append(f"{idx}. {safe_name} — {score}/{total} ta to'g'ri")
+                lines.append(f"*{idx}.* {safe_name} — {score}/{total} ta to'g'ri")
                 
         result_text = "\n".join(lines)
         
@@ -668,7 +687,7 @@ def _user_export_results(msg):
             chunks = [result_text[i:i+4000] for i in range(0, len(result_text), 4000)]
             for chunk in chunks:
                 safe_send(msg.chat.id, chunk, parse_mode="Markdown")
-            safe_send(msg.chat.id, "Barcha natijalar yuborildi ✅", reply_markup=main_menu())
+            safe_send(msg.chat.id, "✅ Barcha natijalar yuborildi", reply_markup=main_menu())
         else:
             safe_send(msg.chat.id, result_text, parse_mode="Markdown", reply_markup=main_menu())
 
@@ -747,6 +766,7 @@ def handle_web_app(msg):
                 analysis_text += f"{i+1}.✅  "
             else:
                 ans_bin += "0"
+                # Odatiy va MS test uchun faqat xato ekanligini ko'rsatamiz
                 analysis_text += f"{i+1}.❌  "
 
             if (i + 1) % 5 == 0:
