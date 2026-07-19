@@ -360,7 +360,7 @@ def recalculate_ms_item_weights(code, total_q=55):
 
 def calculate_ms_final_score(user_answers_bin, item_weights):
     """ O'quvchining to'g'ri javoblari soni bo'yicha bazaviy qolipini olib, 
-        u yechgan savollar qiyinchiligiga qarab ballni tarqatadi. (70 da qotib qolish muammosi tuzatildi)
+        u yechgan savollar qiyinchiligiga qarab ballni tarqatadi.
     """
     togri_soni = user_answers_bin.count('1')
     min_len = min(len(user_answers_bin), len(item_weights))
@@ -370,7 +370,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
     if togri_soni == 0:
         return 0.0, "—"
     
-    # 1. ZONA CHEGARALARINI DINAMIK BELGILASH (To'g'ri soniga qarab kengaytirilgan)
+    # 1. ZONA CHEGARALARINI DINAMIK BELGILASH
     if togri_soni >= 42:
         step = (100.0 - 70.0) / (min_len - 42) if min_len > 42 else 30.0
         min_ball = 70.0 + (togri_soni - 42) * step
@@ -404,7 +404,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
         max_ball = min_ball + step
         if max_ball > 45.9: max_ball = 45.9
 
-    # 2. O'QUVCHINING XOM BALI (Faqat to'g'ri topilgan savollar og'irligi yig'indisi)
+    # 2. O'QUVCHINING XOM BALI
     user_w_sum = sum(item_weights[i] for i in range(min_len) if user_answers_bin[i] == '1')
     
     # 3. INTERPOLATSIYA UCHUN MIN/MAX CHEGARALAR
@@ -420,7 +420,7 @@ def calculate_ms_final_score(user_answers_bin, item_weights):
         
     ratio = max(0.0, min(1.0, ratio))
     
-    # 5. YAKUNIY BALLNI CHIQARISH (Qolip ichiga o'tqazish)
+    # 5. YAKUNIY BALLNI CHIQARISH
     yakuniy_ball = min_ball + ratio * (max_ball - min_ball)
     yakuniy_ball = round(yakuniy_ball, 1)
     
@@ -588,6 +588,8 @@ def _user_export_results(msg):
             output = io.StringIO()
             writer = csv.writer(output, delimiter=';')
 
+            # 🔥 HAR SAFAR NATIJA OLINGANDA BARCHA YUKLANGAN JAVOBLAR ASOSIDA MODEL QAYTA HISOBLANADI 🔥
+            log.info("MS modeli yangi o'quvchilar javoblari bilan qayta hisoblanmoqda...")
             item_weights = recalculate_ms_item_weights(code, total_q)
             evaluated_students = []
             
@@ -598,6 +600,7 @@ def _user_export_results(msg):
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * score + "0" * (total_q - score)
                 
+                # Yangilangan og'irliklarga (savollar qiyinligiga) asoslanib qayta o'qish
                 ball, daraja = calculate_ms_final_score(ans_bin, item_weights)
                 evaluated_students.append({
                     "name": name,
@@ -621,7 +624,7 @@ def _user_export_results(msg):
             bot.send_document(
                 chat_id=msg.chat.id,
                 document=(f"{code}_Natijalar.csv", csv_bytes),
-                caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar xatoliklarni tahlil qilish asosida qayta o'lchandi._",
+                caption=f"📊 *{code}* - test bo'yicha eng aniq reyting ro'yxati.\n\n_Barcha natijalar bazadagi barcha javoblar bir-biriga solishtirilib, eng so'nggi ma'lumotlar va qiyinchilik og'irliklari asosida qayta o'lchandi._",
                 parse_mode="Markdown",
                 reply_markup=main_menu()
             )
@@ -632,18 +635,17 @@ def _user_export_results(msg):
     else:
         # ODATIY TEST - chatga to'g'ridan-to'g'ri xabar sifatida yuboriladi
         
-        # Admin ekanligini tekshirish (MS ballarni faqat unga chiqarish uchun)
         is_admin = (msg.chat.id == SUPER_ADMIN or msg.chat.id == creator_id)
         
         item_weights = []
         if is_admin:
-            # Odatiy test natijalaridan vaqtinchalik ans_bin larni yig'ib MS og'irliklarni hisoblaymiz
             all_ans_bins = []
             for r in rows:
                 ans_bin = extract_bin_from_analysis(r[4])
                 if not ans_bin or len(ans_bin) < total_q:
                     ans_bin = "1" * r[2] + "0" * (total_q - r[2])
                 all_ans_bins.append(ans_bin)
+            # Har safar olinganida barcha o'quvchilar natijasi asosida MS og'irlik qayta o'lchanadi
             item_weights = recalculate_ms_item_weights_from_list(all_ans_bins, total_q)
             
         lines = [f"📊 *{code}* - test natijalari:\n"]
@@ -745,7 +747,6 @@ def handle_web_app(msg):
                 analysis_text += f"{i+1}.✅  "
             else:
                 ans_bin += "0"
-                # Odatiy va MS test uchun faqat xato ekanligini ko'rsatamiz
                 analysis_text += f"{i+1}.❌  "
 
             if (i + 1) % 5 == 0:
