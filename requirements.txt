@@ -2,3 +2,5 @@ Flask==3.0.3
 pyTelegramBotAPI==4.15.4
 gunicorn
 reportlab
+google-generativeai
+apscheduler
