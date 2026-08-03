@@ -43,7 +43,7 @@ app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN, threaded=True, num_threads=20)
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-pro') # Yuqori aniqlik va xatosizlik uchun pro model
+ai_model = genai.GenerativeModel('gemini-1.5-pro')
 
 # --- State Management ---
 _states_lock = threading.Lock()
@@ -139,13 +139,30 @@ def init_db():
         test_code   TEXT NOT NULL,
         answers_bin TEXT NOT NULL
     )""")
-    # YANGI JADVAL: AI boshqaradigan kanallar
     db_exec("""CREATE TABLE IF NOT EXISTS ai_channels (
         chat_id TEXT PRIMARY KEY
     )""")
+    # AI SOZLAMALARI UCHUN YANGI JADVAL
+    db_exec("""CREATE TABLE IF NOT EXISTS ai_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    # Boshlang'ich sozlamalar
+    db_exec("INSERT OR IGNORE INTO ai_settings (key, value) VALUES ('morning_time', '08:00')")
+    db_exec("INSERT OR IGNORE INTO ai_settings (key, value) VALUES ('evening_time', '18:00')")
+    default_prompt = "Siz Abituriyentlar (universitetga tayyorlanayotganlar) uchun matematika kanali ustozisiz. Bugungi kun uchun 1 ta qiziqarli matematik fakt yoki motivatsion qissa yozing. Hech qanday AI ekanligingizni bildirmang."
+    db_exec("INSERT OR IGNORE INTO ai_settings (key, value) VALUES ('morning_prompt', ?)", (default_prompt,))
+    
     log.info("Ma'lumotlar bazasi tayyor ✅")
 
 init_db()
+
+def get_setting(key, default=""):
+    res = db_fetch("SELECT value FROM ai_settings WHERE key=?", (key,), one=True)
+    return res[0] if res else default
+
+def set_setting(key, value):
+    db_exec("INSERT OR REPLACE INTO ai_settings (key, value) VALUES (?,?)", (key, value))
 
 def clean_old_data():
     try:
@@ -157,26 +174,16 @@ def clean_old_data():
 
 # --- Yordamchi Funksiyalar ---
 def progress_bar(score, total):
-    if total == 0:
-        return ""
-    pct   = score / total
+    if total == 0: return ""
+    pct = score / total
     green = int(pct * 10)
     return "🟩" * green + "⬜️" * (10 - green) + f"  {int(pct * 100)}%"
 
 def main_menu(user_id=None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add(
-        types.KeyboardButton("📝 Odatiy test ishlash"),
-        types.KeyboardButton("📈 MS test ishlash"),
-    )
-    kb.add(
-        types.KeyboardButton("➕ Odatiy test qo'shish"),
-        types.KeyboardButton("➕ MS test yaratish")
-    )
-    kb.add(
-        types.KeyboardButton("📊 Natijalarim"),
-        types.KeyboardButton("📊 Natijalarni olish")
-    )
+    kb.add(types.KeyboardButton("📝 Odatiy test ishlash"), types.KeyboardButton("📈 MS test ishlash"))
+    kb.add(types.KeyboardButton("➕ Odatiy test qo'shish"), types.KeyboardButton("➕ MS test yaratish"))
+    kb.add(types.KeyboardButton("📊 Natijalarim"), types.KeyboardButton("📊 Natijalarni olish"))
     if user_id == SUPER_ADMIN:
         kb.add(types.KeyboardButton("👑 Admin Panel"))
     return kb
@@ -212,7 +219,6 @@ def set_commands():
 set_commands()
 
 # --- AI VA AVTOMATLASHTIRISH BO'LIMI ---
-
 def get_ai_channels():
     rows = db_fetch("SELECT chat_id FROM ai_channels")
     return [r[0] for r in rows]
@@ -222,11 +228,7 @@ def ai_morning_task():
     channels = get_ai_channels()
     if not channels: return
 
-    prompt = """Siz Abituriyentlar (universitetga tayyorlanayotganlar) uchun matematika kanali ustozisiz.
-    Bugungi kun uchun 1 ta qiziqarli matematik fakt, mashhur matematik olimning motivatsion hayotiy qissasi yoki 
-    abituriyentlar uchun ajoyib mantiqiy jumboq yozing. Matn tushunarli, motivatsion, rasmiyroq lekin do'stona bo'lsin.
-    Matn ichida hech qanday Sun'iy intellekt yoki Gemini ekanligingiz haqida yozmang. Faqat toza kontent.
-    """
+    prompt = get_setting('morning_prompt')
     try:
         response = ai_model.generate_content(prompt)
         text = response.text
@@ -257,7 +259,6 @@ def ai_evening_task():
     7. Hech qayerda AI, Gemini so'zlari ishlatilmasin.
     
     Chiqarish formati QAT'IY ravishda quyidagicha bo'lsin:
-    
     ---LATEX---
     \begin{enumerate}
     \item Birinchi savol matni...
@@ -291,7 +292,6 @@ def ai_evening_task():
             log.error(f"Javoblar soni 10 ta emas: {len(answers_list)}")
             return
 
-        # LaTeX Shablon
         full_latex = r"""\documentclass[12pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
@@ -325,12 +325,10 @@ def ai_evening_task():
         with open(tex_filename, "w", encoding="utf-8") as f:
             f.write(full_latex)
         
-        # PDF ga o'girish (serverda pdflatex o'rnatilgan bo'lishi shart)
         subprocess.run(["pdflatex", "-interaction=nonstopmode", tex_filename], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         if os.path.exists(pdf_filename):
             answers_json_str = json.dumps(answers_list)
-            # Bazaga kiritish (MS test sifatida, deadline bilan)
             db_exec("INSERT OR REPLACE INTO tests (code, creator_id, answers, deadline, type, link) VALUES (?,?,?,?,?,?)",
                     (test_code, SUPER_ADMIN, answers_json_str, deadline_str, "rush", ""))
             
@@ -352,7 +350,6 @@ Shu botga Test kodini kiritib javoblaringizni yuborishingiz mumkin ✅
                 with open(pdf_filename, "rb") as pdf_file:
                     bot.send_document(ch, pdf_file, caption=caption, parse_mode="Markdown")
             
-            # Fayllarni tozalash
             for ext in [".tex", ".pdf", ".aux", ".log"]:
                 f_del = test_code + ext
                 if os.path.exists(f_del): os.remove(f_del)
@@ -364,10 +361,19 @@ Shu botga Test kodini kiritib javoblaringizni yuborishingiz mumkin ✅
     except Exception as e:
         log.error(f"AI Evening xatosi: {e}")
 
-# Scheduler ishga tushirish
+# Har daqiqada tekshirib turadigan Scheduler funksiyasi
+def check_schedules():
+    now_str = get_uz_now().strftime("%H:%M")
+    m_time = get_setting('morning_time', '08:00')
+    e_time = get_setting('evening_time', '18:00')
+    
+    if now_str == m_time:
+        ai_morning_task()
+    if now_str == e_time:
+        ai_evening_task()
+
 scheduler = BackgroundScheduler(timezone="Asia/Tashkent")
-scheduler.add_job(ai_morning_task, 'cron', hour=8, minute=0)
-scheduler.add_job(ai_evening_task, 'cron', hour=18, minute=0)
+scheduler.add_job(check_schedules, 'cron', minute='*') # Har daqiqada 1 marta tekshiradi
 scheduler.start()
 
 # --- ADMIN PANEL BO'LIMI ---
@@ -375,12 +381,13 @@ scheduler.start()
 def admin_panel_menu(msg):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     kb.add(types.KeyboardButton("📢 AI Kanal Qo'shish"), types.KeyboardButton("🗑 AI Kanal O'chirish"))
+    kb.add(types.KeyboardButton("⚙️ AI Sozlamalari"))
     kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
     safe_send(msg.chat.id, "👨‍💻 *Admin panelga xush kelibsiz!*", parse_mode="Markdown", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "📢 AI Kanal Qo'shish" and m.chat.id == SUPER_ADMIN)
 def admin_add_channel(msg):
-    m = safe_send(msg.chat.id, "Qo'shmoqchi bo'lgan kanalning ID raqami yoki Usernamesini yuboring (Masalan: @kanal_nomi yoki -10012345678):", reply_markup=back_kb())
+    m = safe_send(msg.chat.id, "Qo'shmoqchi bo'lgan kanalning ID raqami yoki Usernamesini yuboring (Masalan: @kanal_nomi):", reply_markup=back_kb())
     bot.register_next_step_handler(m, _process_add_channel)
 
 def _process_add_channel(msg):
@@ -405,8 +412,59 @@ def _process_remove_channel(msg):
     db_exec("DELETE FROM ai_channels WHERE chat_id=?", (ch_id,))
     safe_send(msg.chat.id, f"✅ Kanal AI ro'yxatidan o'chirildi: {ch_id}", reply_markup=main_menu(msg.chat.id))
 
+# --- YANGI: AI SOZLAMALARI BO'LIMI ---
+@bot.message_handler(func=lambda m: m.text == "⚙️ AI Sozlamalari" and m.chat.id == SUPER_ADMIN)
+def ai_settings_menu(msg):
+    m_time = get_setting('morning_time', '08:00')
+    e_time = get_setting('evening_time', '18:00')
+    prompt = get_setting('morning_prompt', 'Noma\'lum')
 
-# --- ESKI MAJBURIY A'ZOLIK TEKSHIRUVI VA BOSHQA BARCHA FUNKSIYALAR ---
+    text = (
+        "⚙️ *AI Sozlamalari*\n\n"
+        f"🌅 *Ertalabki matn vaqti:* `{m_time}`\n"
+        f"🌃 *Kechki PDF test vaqti:* `{e_time}`\n\n"
+        f"📝 *Ertalabki AI mavzusi (Prompt):*\n_{prompt[:150]}..._"
+    )
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add(types.KeyboardButton("⏰ Ertalabki vaqtni o'zgartirish"), types.KeyboardButton("⏰ Kechki vaqtni o'zgartirish"))
+    kb.add(types.KeyboardButton("📝 Ertalabki mavzuni o'zgartirish"))
+    kb.add(types.KeyboardButton("🚀 Ertalabkini hozir yuborish"), types.KeyboardButton("🚀 Kechkini hozir yuborish"))
+    kb.add(types.KeyboardButton("🔙 Ortga qaytish"))
+    safe_send(msg.chat.id, text, parse_mode="Markdown", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "⏰ Ertalabki vaqtni o'zgartirish" and m.chat.id == SUPER_ADMIN)
+def change_m_time(msg):
+    m = safe_send(msg.chat.id, "Ertalabki xabar yuboriladigan vaqtni HH:MM formatida yozing (Masalan: 08:30):", reply_markup=back_kb())
+    bot.register_next_step_handler(m, lambda ms: save_setting(ms, 'morning_time', "Ertalabki vaqt"))
+
+@bot.message_handler(func=lambda m: m.text == "⏰ Kechki vaqtni o'zgartirish" and m.chat.id == SUPER_ADMIN)
+def change_e_time(msg):
+    m = safe_send(msg.chat.id, "Kechki PDF test yuboriladigan vaqtni HH:MM formatida yozing (Masalan: 19:00):", reply_markup=back_kb())
+    bot.register_next_step_handler(m, lambda ms: save_setting(ms, 'evening_time', "Kechki vaqt"))
+
+@bot.message_handler(func=lambda m: m.text == "📝 Ertalabki mavzuni o'zgartirish" and m.chat.id == SUPER_ADMIN)
+def change_prompt(msg):
+    m = safe_send(msg.chat.id, "Sun'iy intellekt har kuni ertalab qanday mavzuda kontent yozishi kerakligini to'liq yozing:", reply_markup=back_kb())
+    bot.register_next_step_handler(m, lambda ms: save_setting(ms, 'morning_prompt', "AI mavzusi"))
+
+def save_setting(msg, key, name):
+    if is_back(msg.text): return go_home(msg)
+    new_val = msg.text.strip()
+    set_setting(key, new_val)
+    safe_send(msg.chat.id, f"✅ {name} muvaffaqiyatli o'zgartirildi: \n`{new_val}`", parse_mode="Markdown")
+    ai_settings_menu(msg)
+
+@bot.message_handler(func=lambda m: m.text == "🚀 Ertalabkini hozir yuborish" and m.chat.id == SUPER_ADMIN)
+def test_morning_now(msg):
+    safe_send(msg.chat.id, "⏳ Ertalabki AI matni tayyorlanib kanalga yuborilmoqda, biroz kuting...")
+    threading.Thread(target=ai_morning_task).start()
+
+@bot.message_handler(func=lambda m: m.text == "🚀 Kechkini hozir yuborish" and m.chat.id == SUPER_ADMIN)
+def test_evening_now(msg):
+    safe_send(msg.chat.id, "⏳ Kechki PDF test tuzilib kanalga yuborilmoqda, jarayon 30-40 soniya olishi mumkin...")
+    threading.Thread(target=ai_evening_task).start()
+
+# --- ESKI MAJBURIY A'ZOLIK VA BOSHQA FUNKSIYALAR ---
 def is_subscribed(user_id):
     if user_id == SUPER_ADMIN: return True
     try:
@@ -434,28 +492,21 @@ def cq_check_sub(call):
 def extract_answers_list(raw_data):
     try:
         data = json.loads(raw_data)
-        if isinstance(data, list):
-            return [str(x).strip().lower() for x in data]
+        if isinstance(data, list): return [str(x).strip().lower() for x in data]
         elif isinstance(data, dict):
             if "answers" in data:
                 ans = data["answers"]
-                if isinstance(ans, list):
-                    return [str(x).strip().lower() for x in ans]
-                elif isinstance(ans, dict):
-                    return [str(v).strip().lower() for k, v in sorted(ans.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
+                if isinstance(ans, list): return [str(x).strip().lower() for x in ans]
+                elif isinstance(ans, dict): return [str(v).strip().lower() for k, v in sorted(ans.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else item[0])]
             else:
                 ans_items = {k: v for k, v in data.items() if str(k).isdigit()}
-                if ans_items:
-                    return [str(v).strip().lower() for k, v in sorted(ans_items.items(), key=lambda item: int(item[0]))]
-                else:
-                    return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0])) if k != "code"]
+                if ans_items: return [str(v).strip().lower() for k, v in sorted(ans_items.items(), key=lambda item: int(item[0]))]
+                else: return [str(v).strip().lower() for k, v in sorted(data.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0])) if k != "code"]
         return [str(data).strip().lower()]
     except Exception:
         text = raw_data.strip().lower()
-        if "," in text:
-            return [x.strip() for x in text.split(",")]
-        else:
-            return list(text)
+        if "," in text: return [x.strip() for x in text.split(",")]
+        else: return list(text)
 
 def extract_bin_from_analysis(analysis_text):
     bin_str = ""
@@ -470,10 +521,8 @@ def cmd_start(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
     clean_old_data() 
     clear_state(msg.chat.id)
-    
     m = safe_send(msg.chat.id, "🎉 Xush kelibsiz!\n\n✏️ To'liq ism va familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
-    if m:
-        bot.register_next_step_handler(m, _register_user)
+    if m: bot.register_next_step_handler(m, _register_user)
 
 def _register_user(msg):
     name = msg.text.strip() if msg.text else ""
@@ -482,8 +531,7 @@ def _register_user(msg):
         if m: bot.register_next_step_handler(m, _register_user)
         return
     db_exec("INSERT OR REPLACE INTO users (user_id, name) VALUES (?,?)", (msg.chat.id, name))
-    safe_send(msg.chat.id, f"✅ Saqlandi! Asosiy menyu, *{name}*:",
-              parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+    safe_send(msg.chat.id, f"✅ Saqlandi! Asosiy menyu, *{name}*:", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Ortga qaytish")
 def handle_back(msg):
@@ -493,18 +541,13 @@ def handle_back(msg):
 def handle_change_name(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
     m = safe_send(msg.chat.id, "✏️ Yangi to'liq ism va familiyangizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
-    if m:
-        bot.register_next_step_handler(m, _register_user)
+    if m: bot.register_next_step_handler(m, _register_user)
 
 @bot.message_handler(commands=["testlarim"])
 @bot.message_handler(func=lambda m: m.text == "📊 Natijalarim")
 def cmd_my_results(msg):
     if not is_subscribed(msg.chat.id): return prompt_sub(msg.chat.id)
-    rows = db_fetch(
-        "SELECT code, score, total, created_at FROM results "
-        "WHERE user_id=? ORDER BY id DESC LIMIT 25",
-        (msg.chat.id,)
-    )
+    rows = db_fetch("SELECT code, score, total, created_at FROM results WHERE user_id=? ORDER BY id DESC LIMIT 25", (msg.chat.id,))
     if not rows:
         safe_send(msg.chat.id, "❌ Siz hali hech qanday test ishlamadingiz.", reply_markup=main_menu(msg.chat.id))
         return
@@ -826,7 +869,7 @@ def handle_web_app(msg):
         db_exec("INSERT OR REPLACE INTO tests (code, creator_id, answers, deadline, type, link) VALUES (?,?,?,?,?,?)",
                 (test_code, msg.chat.id, answers_json_str, state.get("deadline", "0"), test_type, ""))
         clear_state(msg.chat.id)
-        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saq saqlandi!\n🔢 Kod: `{test_code}`", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
+        safe_send(msg.chat.id, f"✅ Test bazaga muvaffaqiyatli saqlandi!\n🔢 Kod: `{test_code}`", parse_mode="Markdown", reply_markup=main_menu(msg.chat.id))
         return
 
     if state.get("action") == "student_solve":
@@ -895,6 +938,23 @@ def telegram_webhook():
     update = telebot.types.Update.de_json(request.get_data(as_text=True))
     bot.process_new_updates([update])
     return "", 200
+
+@app.route("/")
+def index():
+    return "Bot faol va server ishlamoqda!", 200
+
+# --- Webhookni Gunicorn uchun global darajada o'rnatish ---
+try:
+    bot.remove_webhook()
+    if RAILWAY_URL:
+        # URL oxirida "/" qolib ketmasligi uchun rstrip ishlatamiz
+        webhook_url = f"{RAILWAY_URL.rstrip('/')}/{TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        log.info(f"✅ Webhook muvaffaqiyatli o'rnatildi: {webhook_url}")
+    else:
+        log.warning("⚠️ RAILWAY_URL topilmadi. Webhook o'rnatilmadi!")
+except Exception as e:
+    log.error(f"❌ Webhook o'rnatishda xatolik: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=False)
