@@ -37,7 +37,7 @@ RAILWAY_URL = f"https://{_domain}" if _domain else os.environ.get("RAILWAY_URL",
 DB_PATH     = os.environ.get("DB_PATH", "testlar_bazasi.db")
 PORT        = int(os.environ.get("PORT", 5000))
 CHANNEL_USERNAME = "@eshonqulov_math"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "BU_YERGA_API_KALITINGIZNI_QO'YING")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LP7qJu2dfCqqga4EKKGX2yKiiEMrkDhHoGlly4A4C27g")
 
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN, threaded=True, num_threads=20)
